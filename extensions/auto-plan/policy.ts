@@ -1,4 +1,4 @@
-export type AgentMode = "auto" | "plan";
+export type AgentMode = "auto" | "plan" | "bypass-all";
 
 export interface AdvisorDecision {
   decision: "allow" | "ask";

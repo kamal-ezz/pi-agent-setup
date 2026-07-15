@@ -5,10 +5,17 @@ import { join } from "node:path";
 import test from "node:test";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import autoPlanMode, {
+  ADVISOR_SYSTEM_PROMPT,
   hasSensitiveOrExternalPath,
   prepareReviewAction,
   trustedReadOnlyToolNames,
 } from "./index.ts";
+
+test("advisor asks only for destructive or security-critical actions", () => {
+  assert.match(ADVISOR_SYSTEM_PROMPT, /Choose "ask" only/);
+  assert.match(ADVISOR_SYSTEM_PROMPT, /normal non-force pushes/);
+  assert.match(ADVISOR_SYSTEM_PROMPT, /Routine implementation uncertainty is not enough/);
+});
 
 test("review payloads are complete or fail closed", () => {
   const content = `head-${"x".repeat(20_000)}-dangerous-middle-${"y".repeat(20_000)}-tail`;
@@ -83,7 +90,7 @@ test("sensitive and symlinked external reads require review", () => {
   }
 });
 
-test("Auto is default and Shift+Tab toggles read-only Plan mode", async () => {
+test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
   const handlers = new Map<string, (...args: any[]) => any>();
   let activeTools = ["read", "bash", "edit", "write", "bg_status", "subagent_spawn"];
   let shortcut: { key: string; handler: (ctx: any) => Promise<void> } | undefined;
@@ -91,6 +98,7 @@ test("Auto is default and Shift+Tab toggles read-only Plan mode", async () => {
   let branchEntries: any[] = [];
   const statuses: string[] = [];
   const notifications: string[] = [];
+  const desktopNotifications: string[][] = [];
   const BUILTIN_NAMES = new Set(["read", "bash", "edit", "write"]);
 
   const pi = {
@@ -109,6 +117,10 @@ test("Auto is default and Shift+Tab toggles read-only Plan mode", async () => {
       entries.push(entry);
       branchEntries.push(entry);
     },
+    exec: async (_command: string, args: string[]) => {
+      desktopNotifications.push(args);
+      return { code: 0, stdout: "", stderr: "", killed: false };
+    },
     getAllTools: () => activeTools.map((name) => ({
       name,
       description: name,
@@ -126,10 +138,12 @@ test("Auto is default and Shift+Tab toggles read-only Plan mode", async () => {
   const ctx = {
     isIdle: () => true,
     hasUI: true,
+    mode: "tui",
     cwd: "/project",
     sessionManager: {
       getEntries: () => entries,
       getBranch: () => branchEntries,
+      getSessionName: () => "test session",
     },
     ui: {
       theme: { fg: (_color: string, value: string) => value },
@@ -167,8 +181,18 @@ test("Auto is default and Shift+Tab toggles read-only Plan mode", async () => {
   assert.equal(externalRead.block, true);
 
   await shortcut?.handler(ctx);
-  assert.equal(statuses.at(-1), "◆ auto");
+  assert.equal(statuses.at(-1), "⚠ bypass-all");
   assert.deepEqual(activeTools, ["read", "bash", "edit", "write", "bg_status", "subagent_spawn"]);
+  assert.match(notifications.at(-1) ?? "", /Bypass-all mode/);
+
+  const bypassedEdit = await handlers.get("tool_call")?.(
+    { type: "tool_call", toolCallId: "2", toolName: "edit", input: { path: "README.md" } },
+    ctx,
+  );
+  assert.equal(bypassedEdit, undefined);
+
+  await shortcut?.handler(ctx);
+  assert.equal(statuses.at(-1), "◆ auto");
 
   const filteredContext = await handlers.get("context")?.(
     {
@@ -182,17 +206,26 @@ test("Auto is default and Shift+Tab toggles read-only Plan mode", async () => {
   assert.deepEqual(filteredContext.messages, [{ role: "user", content: "keep" }]);
 
   const readResult = await handlers.get("tool_call")?.(
-    { type: "tool_call", toolCallId: "2", toolName: "read", input: { path: "README.md" } },
+    { type: "tool_call", toolCallId: "3", toolName: "read", input: { path: "README.md" } },
     ctx,
   );
   assert.equal(readResult, undefined);
 
   const reviewedEdit = await handlers.get("tool_call")?.(
-    { type: "tool_call", toolCallId: "3", toolName: "edit", input: { path: "README.md" } },
+    { type: "tool_call", toolCallId: "4", toolName: "edit", input: { path: "README.md" } },
     ctx,
   );
   assert.equal(reviewedEdit.block, true);
   assert.match(reviewedEdit.reason, /denied by user/);
+  assert.ok(notifications.some((message) => message.includes("Advisor approval required")));
+  assert.equal(desktopNotifications.length, 1);
+  assert.ok(desktopNotifications[0]?.some((value) => value.includes("Pi advisor")));
+
+  const bypassEntry = entries.find((entry) => entry.data.mode === "bypass-all");
+  branchEntries = [bypassEntry];
+  await handlers.get("session_tree")?.({}, ctx);
+  assert.equal(statuses.at(-1), "⚠ bypass-all");
+  assert.deepEqual(activeTools, ["read", "bash", "edit", "write", "bg_status", "subagent_spawn"]);
 
   const planEntry = entries.find((entry) => entry.data.mode === "plan");
   branchEntries = [planEntry];
