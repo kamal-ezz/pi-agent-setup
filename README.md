@@ -7,8 +7,8 @@ A portable snapshot of the global Pi configuration from `~/.pi/agent`.
 - Pi defaults: dark theme, OpenAI Codex, `gpt-5.6-sol`, and high reasoning effort
 - Codex usage and reset-status extension (`/usage`)
 - Reasoning effort selector (`/effort`)
-- Compact token/context footer
-- Desktop turn-complete notifications (`/notifications`)
+- Responsive telemetry footer with context gauge, token traffic, cache efficiency, model, and reasoning level
+- Desktop turn-complete notifications with a short response overview (`/notifications`)
 - MCP manager (`/mcp`) with Context7 enabled
 - Frontend design skill
 
