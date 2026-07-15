@@ -13,6 +13,7 @@ managed_files=(
   mcp.json
   extensions/codex-usage.ts
   extensions/effort.ts
+  extensions/emoji-responses.ts
   extensions/hide-token-cost.ts
   extensions/turn-notifications.ts
   extensions/context7-mcp/index.ts

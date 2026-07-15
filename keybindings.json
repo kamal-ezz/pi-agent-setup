@@ -1,5 +1,6 @@
 {
   "app.clear": [],
   "app.thinking.cycle": [],
-  "tui.input.copy": []
+  "tui.input.copy": [],
+  "tui.select.cancel": ["escape"]
 }

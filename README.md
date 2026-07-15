@@ -4,14 +4,14 @@ A portable snapshot of the global Pi configuration from `~/.pi/agent`.
 
 ## Included
 
-- Pi defaults: GitHub Dark Default theme, OpenAI Codex, `gpt-5.6-sol`, and high reasoning effort
-- Main-agent Auto mode by default: routine actions run automatically while destructive, security-critical, or `AGENTS.md`-violating actions require approval and send desktop notifications; Shift+Tab cycles green Auto, yellow read-only Plan, and red bypass-all modes
-- Ctrl+C or Cmd+C interrupts an active turn without clearing an idle draft; a second press exits Pi
+- Pi defaults: GitHub Dark Default theme, OpenAI Codex, `gpt-5.6-sol`, and medium reasoning effort
+- Main-agent Auto mode by default: routine actions run automatically while destructive, security-critical, or `AGENTS.md`-violating actions require approval with a persistent in-harness warning and desktop notification; Shift+Tab cycles green Auto, yellow read-only Plan, and red bypass-all modes
+- A mode-colored arrow prefixes the input bar; the terminal tab shows an animated spinner during active turns. Agent responses support natural, sparing Unicode emoji. `/clear` starts a fresh empty session, while Ctrl+C or Cmd+C restores an interrupted prompt without a notification or abort popup, and a second press exits Pi
 - Clipboard images appear as compact numbered placeholders such as `[Image #1]` instead of temporary file paths
-- Codex usage and reset-status extension (`/usage`)
+- Codex usage and reset extension (`/usage`) with a persistent in-harness and desktop warning when the five-hour allowance reaches 10% remaining
 - Reasoning effort selector (`/effort`)
 - Compact footer with project, branch, model, reasoning level, context gauge, and active mode
-- Desktop turn-complete notifications with a short response overview (`/notifications`)
+- A short completion chime on turn completion only when Pi's terminal tab is unfocused; desktop notifications remain the fallback outside the TUI (`/notifications`)
 - MCP manager (`/mcp`) with Context7 enabled
 - Background terminals for servers, watchers, and long-running commands (`/ps`)
 - Interactive local changes browser (`/diff`)
@@ -20,7 +20,7 @@ A portable snapshot of the global Pi configuration from `~/.pi/agent`.
 
 ## Install
 
-Requirements: Pi, Node.js 20 or newer, npm, and Git. Desktop notifications additionally require `notify-send`.
+Requirements: Pi, Node.js 20 or newer, npm, and Git. Desktop-notification fallback additionally requires `notify-send`; chime playback uses `canberra-gtk-play` when available.
 
 Pi-backed subagents work with the installed Pi models. Claude Code and Codex subagents additionally require their respective CLIs to be installed and authenticated.
 

@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const PROVIDER = "openai-codex";
@@ -7,6 +8,10 @@ const AUTH_CLAIM = "https://api.openai.com/auth";
 const REFRESH_INTERVAL_MS = 5 * 60_000;
 const TICK_INTERVAL_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 15_000;
+const FIVE_HOUR_WINDOW_SECONDS = 5 * 60 * 60;
+const FIVE_HOUR_WARNING_USED_PERCENT = 90;
+const RESET_TIME_TOLERANCE_MS = 5 * 60_000;
+const FIVE_HOUR_WIDGET_KEY = "codex-five-hour-warning";
 
 type UsageWindowPayload = {
 	used_percent?: number;
@@ -28,13 +33,13 @@ type UsagePayload = {
 	} | null;
 };
 
-type UsageWindow = {
+export type UsageWindow = {
 	usedPercent: number;
 	windowSeconds?: number;
 	resetAtMs?: number;
 };
 
-type UsageSnapshot = {
+export type UsageSnapshot = {
 	planType?: string;
 	primary?: UsageWindow;
 	secondary?: UsageWindow;
@@ -140,6 +145,51 @@ function normalizeUsage(value: unknown): UsageSnapshot {
 	};
 }
 
+function fiveHourWindow(snapshot: UsageSnapshot): UsageWindow | undefined {
+	return [snapshot.primary, snapshot.secondary].find(
+		(window) =>
+			window?.windowSeconds !== undefined &&
+			Math.abs(window.windowSeconds - FIVE_HOUR_WINDOW_SECONDS) <= 60,
+	);
+}
+
+export class FiveHourWarningTracker {
+	private warnedResetAtMs: number | undefined;
+	private warnedWithoutReset = false;
+
+	take(snapshot: UsageSnapshot): UsageWindow | undefined {
+		const window = fiveHourWindow(snapshot);
+		if (!window) return undefined;
+
+		if (window.usedPercent < FIVE_HOUR_WARNING_USED_PERCENT) {
+			if (
+				window.resetAtMs !== undefined &&
+				this.warnedResetAtMs !== undefined &&
+				Math.abs(window.resetAtMs - this.warnedResetAtMs) > RESET_TIME_TOLERANCE_MS
+			) {
+				this.warnedResetAtMs = undefined;
+			}
+			if (window.usedPercent < 50) this.warnedWithoutReset = false;
+			return undefined;
+		}
+
+		if (window.resetAtMs !== undefined) {
+			if (
+				this.warnedResetAtMs !== undefined &&
+				Math.abs(window.resetAtMs - this.warnedResetAtMs) <= RESET_TIME_TOLERANCE_MS
+			) {
+				return undefined;
+			}
+			this.warnedResetAtMs = window.resetAtMs;
+			return window;
+		}
+
+		if (this.warnedWithoutReset) return undefined;
+		this.warnedWithoutReset = true;
+		return window;
+	}
+}
+
 function windowLabel(window: UsageWindow): string {
 	const seconds = window.windowSeconds;
 	if (!seconds) return "limit";
@@ -185,20 +235,66 @@ export default function (pi: ExtensionAPI) {
 	let requestController: AbortController | undefined;
 	let inFlight: Promise<UsageSnapshot | undefined> | undefined;
 	let sessionGeneration = 0;
+	const warningTracker = new FiveHourWarningTracker();
 
 	function updateStatus(ctx: ExtensionContext): void {
 		// Usage remains available through /usage, but does not occupy the footer.
 		ctx.ui.setStatus("codex-usage", undefined);
 	}
 
+	async function sendDesktopWarning(ctx: ExtensionContext, message: string): Promise<void> {
+		if (ctx.mode !== "tui") return;
+		const location = ctx.sessionManager.getSessionName() || basename(ctx.cwd) || ctx.cwd;
+		const result = await pi.exec(
+			"notify-send",
+			[
+				"--app-name=Pi",
+				"--urgency=normal",
+				"--expire-time=15000",
+				`Pi usage — ${location}`,
+				message,
+			],
+			{ timeout: 5000 },
+		);
+		if (result.code !== 0) {
+			throw new Error(result.stderr.trim() || `notify-send exited with code ${result.code}`);
+		}
+	}
+
+	function updateFiveHourWarning(ctx: ExtensionContext, current: UsageSnapshot | undefined): void {
+		const window = current ? fiveHourWindow(current) : undefined;
+		const shouldNotify = current ? warningTracker.take(current) : undefined;
+		if (!isCodex(ctx) || !window || window.usedPercent < FIVE_HOUR_WARNING_USED_PERCENT) {
+			ctx.ui.setWidget(FIVE_HOUR_WIDGET_KEY, undefined);
+			return;
+		}
+
+		const remaining = Math.max(0, 100 - window.usedPercent);
+		const reset = window.resetAtMs ? ` · resets in ${timeUntil(window.resetAtMs)}` : "";
+		const plain = `Codex 5h limit · ${formatPercent(remaining)}% remaining${reset}`;
+		ctx.ui.setWidget(
+			FIVE_HOUR_WIDGET_KEY,
+			[ctx.ui.theme.fg("warning", `⚠ ${plain}`)],
+			{ placement: "aboveEditor" },
+		);
+
+		if (!shouldNotify) return;
+		ctx.ui.notify(plain, "warning");
+		void sendDesktopWarning(ctx, plain).catch(() => {
+			// Desktop notifications are optional; the in-harness banner remains visible.
+		});
+	}
+
 	async function refresh(ctx: ExtensionContext, force = false): Promise<UsageSnapshot | undefined> {
 		if (!isCodex(ctx)) {
 			snapshot = undefined;
 			updateStatus(ctx);
+			updateFiveHourWarning(ctx, undefined);
 			return undefined;
 		}
 		if (!force && snapshot && Date.now() - snapshot.fetchedAt < REFRESH_INTERVAL_MS) {
 			updateStatus(ctx);
+			updateFiveHourWarning(ctx, snapshot);
 			return snapshot;
 		}
 		if (inFlight) return inFlight;
@@ -212,6 +308,7 @@ export default function (pi: ExtensionAPI) {
 				if (generation !== sessionGeneration) return undefined;
 				snapshot = normalizeUsage(payload);
 				updateStatus(ctx);
+				updateFiveHourWarning(ctx, snapshot);
 				return snapshot;
 			} finally {
 				if (generation === sessionGeneration) requestController = undefined;
@@ -231,6 +328,7 @@ export default function (pi: ExtensionAPI) {
 		snapshot = undefined;
 		activeCtx = ctx;
 		updateStatus(ctx);
+		updateFiveHourWarning(ctx, undefined);
 		void refresh(ctx).catch(() => {});
 		interval = setInterval(() => {
 			if (!activeCtx) return;
@@ -244,6 +342,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", () => {
+		activeCtx?.ui.setWidget(FIVE_HOUR_WIDGET_KEY, undefined);
 		sessionGeneration++;
 		requestController?.abort();
 		requestController = undefined;
@@ -260,6 +359,7 @@ export default function (pi: ExtensionAPI) {
 		inFlight = undefined;
 		snapshot = undefined;
 		updateStatus(ctx);
+		updateFiveHourWarning(ctx, undefined);
 		void refresh(ctx, true).catch(() => {});
 	});
 

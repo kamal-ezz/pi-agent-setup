@@ -7,10 +7,12 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import autoPlanMode, {
   ADVISOR_SYSTEM_PROMPT,
   ClipboardImageMarkers,
+  addInputArrow,
   createInterruptHandler,
   formatAgentInstructions,
   hasSensitiveOrExternalPath,
   prepareReviewAction,
+  terminalTitle,
   trustedReadOnlyToolNames,
 } from "./index.ts";
 
@@ -31,6 +33,23 @@ test("advisor receives every loaded AGENTS.md and ignores other context files", 
   assert.match(instructions, /Use pnpm/);
   assert.doesNotMatch(instructions, /Not advisor policy/);
   assert.match(formatAgentInstructions([]), /No AGENTS\.md/);
+});
+
+test("terminal title includes an active-turn spinner", () => {
+  const ctx = {
+    cwd: "/work/pi-agent-setup",
+    sessionManager: { getSessionName: () => "feature work" },
+  } as any;
+  assert.equal(terminalTitle(ctx), "π - feature work - pi-agent-setup");
+  assert.equal(terminalTitle(ctx, "⠋"), "⠋ π - feature work - pi-agent-setup");
+});
+
+test("input arrow prefixes only the first editable line", () => {
+  assert.deepEqual(
+    addInputArrow(["────", " text", " wrap", "────"], 12, "➜"),
+    ["────", "➜  text", " wrap", "────"],
+  );
+  assert.deepEqual(addInputArrow(["──", "", "──"], 2, "➜"), ["──", "➜ ", "──"]);
 });
 
 test("clipboard images render as numbered placeholders and submit real paths", () => {
@@ -55,24 +74,27 @@ test("Ctrl/Cmd+C preserves drafts, interrupts turns, and exits on a second press
   let idle = true;
   let aborts = 0;
   let shutdowns = 0;
-  const notices: string[] = [];
-  const interrupt = createInterruptHandler(() => currentTime);
+  const restoredDrafts: string[] = [];
+  const interrupt = createInterruptHandler(
+    () => currentTime,
+    () => "finish the refactor",
+  );
   const ctx = {
     isIdle: () => idle,
     abort: () => aborts++,
     shutdown: () => shutdowns++,
-    ui: { notify: (message: string) => notices.push(message) },
+    ui: { setEditorText: (text: string) => restoredDrafts.push(text) },
   } as any;
 
   interrupt(ctx);
   assert.equal(aborts, 0);
-  assert.match(notices.at(-1) ?? "", /Prompt preserved/);
+  assert.deepEqual(restoredDrafts, ["finish the refactor"]);
 
   currentTime += 800;
   idle = false;
   interrupt(ctx);
   assert.equal(aborts, 1);
-  assert.match(notices.at(-1) ?? "", /Turn interrupted/);
+  assert.deepEqual(restoredDrafts, ["finish the refactor", "finish the refactor"]);
 
   currentTime += 200;
   interrupt(ctx);
@@ -156,11 +178,14 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
   const handlers = new Map<string, (...args: any[]) => any>();
   let activeTools = ["read", "bash", "edit", "write", "bg_status", "subagent_spawn"];
   const shortcuts = new Map<string, { handler: (ctx: any) => Promise<void> | void }>();
+  const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> | void }>();
   const entries: any[] = [];
   let branchEntries: any[] = [];
   const statuses: string[] = [];
   const notifications: string[] = [];
   const desktopNotifications: string[][] = [];
+  const approvalWidgets: unknown[] = [];
+  let newSessions = 0;
   const BUILTIN_NAMES = new Set(["read", "bash", "edit", "write"]);
 
   const pi = {
@@ -169,6 +194,9 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
     },
     registerShortcut(key: string, options: { handler: (ctx: any) => Promise<void> | void }) {
       shortcuts.set(key, { handler: options.handler });
+    },
+    registerCommand(name: string, options: { handler: (args: string, ctx: any) => Promise<void> | void }) {
+      commands.set(name, { handler: options.handler });
     },
     getActiveTools: () => [...activeTools],
     setActiveTools(tools: string[]) {
@@ -207,12 +235,19 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
       getBranch: () => branchEntries,
       getSessionName: () => "test session",
     },
+    newSession: async () => {
+      newSessions++;
+      return { cancelled: false };
+    },
     ui: {
       theme: { fg: (_color: string, value: string) => value },
       setStatus: (_key: string, value: string) => statuses.push(value),
       notify: (message: string) => notifications.push(message),
       select: async () => "Deny",
       setEditorComponent: () => {},
+      setEditorText: () => {},
+      setTitle: () => {},
+      setWidget: (_key: string, value: unknown) => approvalWidgets.push(value),
     },
   } as any;
 
@@ -221,6 +256,8 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
   assert.ok(shortcut);
   assert.ok(shortcuts.has("ctrl+c"));
   assert.ok(shortcuts.has("super+c"));
+  await commands.get("clear")?.handler("", ctx);
+  assert.equal(newSessions, 1);
 
   await handlers.get("session_start")?.({ type: "session_start" }, ctx);
   assert.equal(statuses.at(-1), "◆ auto");
@@ -288,6 +325,8 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
   assert.ok(notifications.some((message) => message.includes("Advisor approval required")));
   assert.equal(desktopNotifications.length, 1);
   assert.ok(desktopNotifications[0]?.some((value) => value.includes("Pi advisor")));
+  assert.ok(approvalWidgets.some((value) => Array.isArray(value)));
+  assert.equal(approvalWidgets.at(-1), undefined);
 
   const bypassEntry = entries.find((entry) => entry.data.mode === "bypass-all");
   branchEntries = [bypassEntry];

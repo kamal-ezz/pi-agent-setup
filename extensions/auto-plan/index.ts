@@ -10,7 +10,13 @@ import {
   type KeybindingsManager,
   type ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
-import { Key, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
+import {
+  Key,
+  truncateToWidth,
+  visibleWidth,
+  type EditorTheme,
+  type TUI,
+} from "@earendil-works/pi-tui";
 import {
   boundedJson,
   type AgentMode,
@@ -23,10 +29,13 @@ import {
 
 const MODE_ENTRY_TYPE = "auto-plan-mode";
 const STATUS_KEY = "auto-plan-mode";
+const ADVISOR_APPROVAL_WIDGET_KEY = "auto-plan-approval";
 const REVIEW_MAX_TOKENS = 300;
 const REVIEW_INPUT_LIMIT = 50_000;
 const DOUBLE_INTERRUPT_WINDOW_MS = 750;
 const MODE_ORDER: AgentMode[] = ["auto", "plan", "bypass-all"];
+const TITLE_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const TITLE_SPINNER_INTERVAL_MS = 100;
 
 const BUILTIN_READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls", "bash"]);
 const TRUSTED_EXTENSION_TOOL_PATHS: Record<string, string> = {
@@ -97,7 +106,37 @@ export class ClipboardImageMarkers {
 
 type ContextFile = NonNullable<BuildSystemPromptOptions["contextFiles"]>[number];
 
-export function createInterruptHandler(now: () => number = Date.now) {
+export function terminalTitle(ctx: ExtensionContext, spinner?: string): string {
+  const sessionName = ctx.sessionManager.getSessionName();
+  const projectName = basename(ctx.cwd);
+  const title = sessionName
+    ? `π - ${sessionName} - ${projectName}`
+    : `π - ${projectName}`;
+  return spinner ? `${spinner} ${title}` : title;
+}
+
+export function addInputArrow(
+  lines: string[],
+  width: number,
+  arrow: string,
+): string[] {
+  // Editor output is top border, one or more input rows, then bottom border.
+  // Prefix only the first input row so wrapped prompts remain visually aligned.
+  if (lines.length < 3 || width <= 0) return lines;
+  const prefix = `${arrow} `;
+  const available = Math.max(0, width - visibleWidth(prefix));
+  const firstInputLine = lines[1] ?? "";
+  return [
+    lines[0] ?? "",
+    prefix + truncateToWidth(firstInputLine, available, ""),
+    ...lines.slice(2),
+  ];
+}
+
+export function createInterruptHandler(
+  now: () => number = Date.now,
+  restoreDraft: () => string | undefined = () => undefined,
+) {
   let lastPressAt = Number.NEGATIVE_INFINITY;
   return (ctx: ExtensionContext): void => {
     const pressedAt = now();
@@ -108,16 +147,11 @@ export function createInterruptHandler(now: () => number = Date.now) {
     }
 
     lastPressAt = pressedAt;
-    if (ctx.isIdle()) {
-      ctx.ui.notify(
-        "Prompt preserved. Press Ctrl/Cmd+C again to exit Pi.",
-        "info",
-      );
-      return;
-    }
+    const draft = restoreDraft();
+    if (draft) ctx.ui.setEditorText(draft);
+    if (ctx.isIdle()) return;
 
     ctx.abort();
-    ctx.ui.notify("Turn interrupted. Press Ctrl/Cmd+C again to exit Pi.", "warning");
   };
 }
 
@@ -252,7 +286,27 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
   let mode: AgentMode = "auto";
   let toolsBeforePlan: string[] | undefined;
   let activeTui: TUI | undefined;
+  let submittedPrompt: string | undefined;
+  let titleSpinnerTimer: ReturnType<typeof setInterval> | undefined;
+  let titleSpinnerFrame = 0;
   let agentInstructions = "(No AGENTS.md instructions were loaded.)";
+
+  const stopTitleSpinner = (ctx: ExtensionContext) => {
+    if (titleSpinnerTimer) clearInterval(titleSpinnerTimer);
+    titleSpinnerTimer = undefined;
+    ctx.ui.setTitle(terminalTitle(ctx));
+  };
+
+  const startTitleSpinner = (ctx: ExtensionContext) => {
+    if (titleSpinnerTimer) return;
+    const updateTitle = () => {
+      const frame = TITLE_SPINNER_FRAMES[titleSpinnerFrame % TITLE_SPINNER_FRAMES.length];
+      titleSpinnerFrame++;
+      ctx.ui.setTitle(terminalTitle(ctx, frame));
+    };
+    updateTitle();
+    titleSpinnerTimer = setInterval(updateTitle, TITLE_SPINNER_INTERVAL_MS);
+  };
 
   function updateStatus(ctx: ExtensionContext, reviewing = false): void {
     const label = reviewing
@@ -422,6 +476,14 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
       };
     }
 
+    ctx.ui.setWidget(
+      ADVISOR_APPROVAL_WIDGET_KEY,
+      [
+        ctx.ui.theme.fg("warning", `⚠ Advisor approval required · ${event.toolName}`),
+        ctx.ui.theme.fg("muted", reason),
+      ],
+      { placement: "aboveEditor" },
+    );
     ctx.ui.notify(`Advisor approval required for ${event.toolName}.`, "warning");
     try {
       await sendAdvisorNotification(event, reason, ctx);
@@ -429,22 +491,34 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
       // Desktop notification availability must never block the approval dialog.
     }
 
-    const choice = await ctx.ui.select(
-      `Auto mode requests approval\n\nTool: ${event.toolName}\nArguments: ${actionPreview(reviewPayload)}\n\nAdvisor: ${reason}`,
-      ["Allow once", "Deny"],
-    );
+    let choice: string | undefined;
+    try {
+      choice = await ctx.ui.select(
+        `Auto mode requests approval\n\nTool: ${event.toolName}\nArguments: ${actionPreview(reviewPayload)}\n\nAdvisor: ${reason}`,
+        ["Allow once", "Deny"],
+      );
+    } finally {
+      ctx.ui.setWidget(ADVISOR_APPROVAL_WIDGET_KEY, undefined);
+    }
     if (choice !== "Allow once") {
       return { block: true, reason: `Auto mode: action denied by user. ${reason}` };
     }
     return undefined;
   }
 
+  pi.registerCommand("clear", {
+    description: "Start a fresh empty session",
+    handler: async (_args, ctx) => {
+      await ctx.newSession();
+    },
+  });
+
   pi.registerShortcut(Key.shift("tab"), {
     description: "Cycle Auto / Plan / bypass-all mode",
     handler: async (ctx) => toggleMode(ctx),
   });
 
-  const interrupt = createInterruptHandler();
+  const interrupt = createInterruptHandler(Date.now, () => submittedPrompt);
   pi.registerShortcut(Key.ctrl("c"), {
     description: "Interrupt turn; press twice to exit Pi",
     handler: interrupt,
@@ -500,6 +574,7 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
         ) {
           const visibleText = super.getText();
           const expandedText = this.imageMarkers.expand(visibleText);
+          submittedPrompt = expandedText.trim() || undefined;
           if (expandedText !== visibleText) super.setText(expandedText);
         }
         super.handleInput(data);
@@ -509,7 +584,11 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
         const color =
           mode === "auto" ? "success" : mode === "plan" ? "warning" : "error";
         this.borderColor = (text: string) => ctx.ui.theme.fg(color, text);
-        return super.render(width);
+        return addInputArrow(
+          super.render(width),
+          width,
+          ctx.ui.theme.fg(color, "➜"),
+        );
       }
     }
 
@@ -520,11 +599,24 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
     restoreModeFromBranch(ctx);
   });
 
-  pi.on("session_tree", async (_event, ctx) => {
-    restoreModeFromBranch(ctx);
+  pi.on("agent_start", async (_event, ctx) => {
+    startTitleSpinner(ctx);
   });
 
-  pi.on("session_shutdown", async () => {
+  pi.on("agent_settled", async (_event, ctx) => {
+    submittedPrompt = undefined;
+    stopTitleSpinner(ctx);
+  });
+
+  pi.on("session_tree", async (_event, ctx) => {
+    restoreModeFromBranch(ctx);
+    if (titleSpinnerTimer) startTitleSpinner(ctx);
+    else ctx.ui.setTitle(terminalTitle(ctx));
+  });
+
+  pi.on("session_shutdown", async (_event, ctx) => {
+    stopTitleSpinner(ctx);
+    ctx.ui.setWidget(ADVISOR_APPROVAL_WIDGET_KEY, undefined);
     // Pi preserves the active tool set across /reload. Restore the pre-Plan
     // snapshot before teardown so a reloaded instance can capture all tools.
     if (toolsBeforePlan) {
