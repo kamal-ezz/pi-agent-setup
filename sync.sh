@@ -6,6 +6,7 @@ agent_dir="${PI_AGENT_DIR:-${HOME}/.pi/agent}"
 
 managed_files=(
   settings.json
+  keybindings.json
   mcp.json
   extensions/codex-usage.ts
   extensions/effort.ts
@@ -20,6 +21,7 @@ managed_files=(
 )
 
 managed_directories=(
+  extensions/auto-plan
   extensions/background-terminals
   extensions/diff
   extensions/subagents

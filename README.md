@@ -5,6 +5,7 @@ A portable snapshot of the global Pi configuration from `~/.pi/agent`.
 ## Included
 
 - Pi defaults: GitHub Dark Default theme, OpenAI Codex, `gpt-5.6-sol`, and high reasoning effort
+- Main-agent Auto mode by default: routine actions are model-reviewed, risky actions require approval, and Shift+Tab toggles read-only Plan mode with a green Auto / yellow Plan editor border
 - Codex usage and reset-status extension (`/usage`)
 - Reasoning effort selector (`/effort`)
 - Responsive telemetry footer with context gauge, token traffic, cache efficiency, model, and reasoning level
@@ -51,10 +52,12 @@ git diff
 ```text
 .
 ├── settings.json
+├── keybindings.json
 ├── mcp.json
 ├── themes/
 │   └── github-dark-default.json
 ├── extensions/
+│   ├── auto-plan/
 │   ├── background-terminals/
 │   ├── codex-usage.ts
 │   ├── context7-mcp/
