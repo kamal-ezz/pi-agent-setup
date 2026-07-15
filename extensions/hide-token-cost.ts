@@ -4,14 +4,6 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 const GAUGE_CELLS = 10;
 
-function formatTokens(count: number): string {
-	if (count < 1_000) return String(count);
-	if (count < 10_000) return `${(count / 1_000).toFixed(1)}k`;
-	if (count < 1_000_000) return `${Math.round(count / 1_000)}k`;
-	if (count < 10_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
-	return `${Math.round(count / 1_000_000)}M`;
-}
-
 function columns(left: string, right: string, width: number, ellipsis: string): string {
 	if (!right) return truncateToWidth(left, width, ellipsis);
 	if (visibleWidth(left) + visibleWidth(right) + 2 <= width) {
@@ -22,10 +14,6 @@ function columns(left: string, right: string, width: number, ellipsis: string): 
 	if (availableLeft < 8) return truncateToWidth(left, width, ellipsis);
 	const compactLeft = truncateToWidth(left, availableLeft, ellipsis);
 	return compactLeft + " ".repeat(Math.max(2, width - visibleWidth(compactLeft) - visibleWidth(right))) + right;
-}
-
-function firstThatFits(candidates: string[], width: number): string {
-	return candidates.find((candidate) => visibleWidth(candidate) <= width) ?? candidates[candidates.length - 1]!;
 }
 
 async function repositoryName(pi: ExtensionAPI, cwd: string): Promise<string> {
@@ -45,7 +33,6 @@ export default function (pi: ExtensionAPI) {
 		const project = await repositoryName(pi, ctx.sessionManager.getCwd());
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			const unsubscribe = footerData.onBranchChange(() => tui.requestRender());
-			const separator = theme.fg("dim", " │ ");
 			const dot = theme.fg("dim", " · ");
 			const ellipsis = theme.fg("dim", "…");
 
@@ -53,21 +40,6 @@ export default function (pi: ExtensionAPI) {
 				dispose: unsubscribe,
 				invalidate() {},
 				render(width: number): string[] {
-					let input = 0;
-					let output = 0;
-					let cacheWrite = 0;
-					let latestCacheHitRate: number | undefined;
-
-					for (const entry of ctx.sessionManager.getEntries()) {
-						if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-						const usage = entry.message.usage;
-						input += usage.input;
-						output += usage.output;
-						cacheWrite += usage.cacheWrite;
-						const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
-						latestCacheHitRate = promptTokens > 0 ? (usage.cacheRead / promptTokens) * 100 : undefined;
-					}
-
 					const projectText = theme.bold(theme.fg("accent", project));
 					const branch = footerData.getGitBranch();
 					const sessionName = ctx.sessionManager.getSessionName();
@@ -97,28 +69,21 @@ export default function (pi: ExtensionAPI) {
 					const gauge = theme.fg(contextTone, "▓".repeat(filledCells)) + theme.fg("dim", "░".repeat(GAUGE_CELLS - filledCells));
 					const contextCompact = theme.fg("muted", "ctx ") + theme.fg(contextTone, `${roundedPercent}%`);
 					const contextFull = theme.fg("muted", "ctx ") + gauge + " " + theme.fg(contextTone, `${roundedPercent}%`);
-					const tokenTraffic = `${theme.fg("muted", "in ")}${formatTokens(input)}  ${theme.fg("muted", "out ")}${formatTokens(output)}`;
-					const cache = latestCacheHitRate === undefined
-						? ""
-						: `${theme.fg("muted", "cache ")}${Math.round(latestCacheHitRate)}%`;
-					const cacheWriteText = cacheWrite > 0 ? `${theme.fg("muted", "write ")}${formatTokens(cacheWrite)}` : "";
-
-					const telemetry = firstThatFits(
-						[
-							[contextFull, tokenTraffic, cache, cacheWriteText].filter(Boolean).join(separator),
-							[contextCompact, tokenTraffic, cache].filter(Boolean).join(separator),
-							[contextCompact, tokenTraffic].join(separator),
-							contextCompact,
-						],
-						width,
-					);
-
-					const lines = [truncateToWidth(header, width, ellipsis), truncateToWidth(telemetry, width, ellipsis)];
 					const statuses = [...footerData.getExtensionStatuses().entries()]
+						.filter(([key]) => key !== "codex-usage")
 						.sort(([a], [b]) => a.localeCompare(b))
-						.map(([, value]) => value.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim());
-					if (statuses.length) lines.push(truncateToWidth(statuses.join(" "), width, ellipsis));
-					return lines;
+						.map(([, value]) => value.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim())
+						.filter(Boolean);
+					const activity = statuses.join(dot);
+					const contextText =
+						visibleWidth(activity) + visibleWidth(contextFull) + (activity ? 2 : 0) <= width
+							? contextFull
+							: contextCompact;
+					const detail = activity
+						? columns(activity, contextText, width, ellipsis)
+						: truncateToWidth(contextText, width, ellipsis);
+
+					return [truncateToWidth(header, width, ellipsis), detail];
 				},
 			};
 		});

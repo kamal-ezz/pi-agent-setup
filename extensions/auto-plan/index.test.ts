@@ -6,6 +6,9 @@ import test from "node:test";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import autoPlanMode, {
   ADVISOR_SYSTEM_PROMPT,
+  ClipboardImageMarkers,
+  createInterruptHandler,
+  formatAgentInstructions,
   hasSensitiveOrExternalPath,
   prepareReviewAction,
   trustedReadOnlyToolNames,
@@ -15,6 +18,65 @@ test("advisor asks only for destructive or security-critical actions", () => {
   assert.match(ADVISOR_SYSTEM_PROMPT, /Choose "ask" only/);
   assert.match(ADVISOR_SYSTEM_PROMPT, /normal non-force pushes/);
   assert.match(ADVISOR_SYSTEM_PROMPT, /Routine implementation uncertainty is not enough/);
+  assert.match(ADVISOR_SYSTEM_PROMPT, /AGENTS\.md instructions/);
+});
+
+test("advisor receives every loaded AGENTS.md and ignores other context files", () => {
+  const instructions = formatAgentInstructions([
+    { path: "/repo/AGENTS.md", content: "Never push directly." },
+    { path: "/repo/packages/app/agents.MD", content: "Use pnpm." },
+    { path: "/repo/CLAUDE.md", content: "Not advisor policy." },
+  ]);
+  assert.match(instructions, /Never push directly/);
+  assert.match(instructions, /Use pnpm/);
+  assert.doesNotMatch(instructions, /Not advisor policy/);
+  assert.match(formatAgentInstructions([]), /No AGENTS\.md/);
+});
+
+test("clipboard images render as numbered placeholders and submit real paths", () => {
+  const images = new ClipboardImageMarkers();
+  const first = "/tmp/pi-clipboard-129d97e0-d15a-46f4-8716-b3e6b042e261.png";
+  const second = "/tmp/pi-clipboard-ed18a6e0-c6fa-4acc-a5a5-0d044c70cf2c.jpg";
+
+  assert.equal(images.collapse(first), "[Image #1]");
+  assert.equal(
+    images.collapse(`Compare ${first} with ${second}`),
+    "Compare [Image #1] with [Image #2]",
+  );
+  assert.equal(
+    images.expand("Compare [Image #1] with [Image #2]"),
+    `Compare ${first} with ${second}`,
+  );
+  assert.equal(images.collapse(first), "[Image #1]");
+});
+
+test("Ctrl/Cmd+C preserves drafts, interrupts turns, and exits on a second press", () => {
+  let currentTime = 1_000;
+  let idle = true;
+  let aborts = 0;
+  let shutdowns = 0;
+  const notices: string[] = [];
+  const interrupt = createInterruptHandler(() => currentTime);
+  const ctx = {
+    isIdle: () => idle,
+    abort: () => aborts++,
+    shutdown: () => shutdowns++,
+    ui: { notify: (message: string) => notices.push(message) },
+  } as any;
+
+  interrupt(ctx);
+  assert.equal(aborts, 0);
+  assert.match(notices.at(-1) ?? "", /Prompt preserved/);
+
+  currentTime += 800;
+  idle = false;
+  interrupt(ctx);
+  assert.equal(aborts, 1);
+  assert.match(notices.at(-1) ?? "", /Turn interrupted/);
+
+  currentTime += 200;
+  interrupt(ctx);
+  assert.equal(shutdowns, 1);
 });
 
 test("review payloads are complete or fail closed", () => {
@@ -93,7 +155,7 @@ test("sensitive and symlinked external reads require review", () => {
 test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
   const handlers = new Map<string, (...args: any[]) => any>();
   let activeTools = ["read", "bash", "edit", "write", "bg_status", "subagent_spawn"];
-  let shortcut: { key: string; handler: (ctx: any) => Promise<void> } | undefined;
+  const shortcuts = new Map<string, { handler: (ctx: any) => Promise<void> | void }>();
   const entries: any[] = [];
   let branchEntries: any[] = [];
   const statuses: string[] = [];
@@ -105,8 +167,8 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
     on(name: string, handler: (...args: any[]) => any) {
       handlers.set(name, handler);
     },
-    registerShortcut(key: string, options: { handler: (ctx: any) => Promise<void> }) {
-      shortcut = { key, handler: options.handler };
+    registerShortcut(key: string, options: { handler: (ctx: any) => Promise<void> | void }) {
+      shortcuts.set(key, { handler: options.handler });
     },
     getActiveTools: () => [...activeTools],
     setActiveTools(tools: string[]) {
@@ -155,7 +217,10 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
   } as any;
 
   autoPlanMode(pi);
-  assert.equal(shortcut?.key, "shift+tab");
+  const shortcut = shortcuts.get("shift+tab");
+  assert.ok(shortcut);
+  assert.ok(shortcuts.has("ctrl+c"));
+  assert.ok(shortcuts.has("super+c"));
 
   await handlers.get("session_start")?.({ type: "session_start" }, ctx);
   assert.equal(statuses.at(-1), "◆ auto");
@@ -166,7 +231,10 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
   assert.deepEqual(activeTools, ["read", "bash", "bg_status"]);
   assert.match(notifications.at(-1) ?? "", /Plan mode/);
 
-  const planContext = await handlers.get("before_agent_start")?.({}, ctx);
+  const planContext = await handlers.get("before_agent_start")?.(
+    { systemPromptOptions: { contextFiles: [] } },
+    ctx,
+  );
   assert.match(planContext.message.content, /PLAN MODE ACTIVE/);
 
   const blocked = await handlers.get("tool_call")?.(

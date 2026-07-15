@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "check": "tsc --noEmit -p .",
-    "test": "node --test --experimental-strip-types index.test.ts policy.test.ts"
+    "test": "node --test --experimental-strip-types *.test.*"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

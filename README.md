@@ -5,10 +5,12 @@ A portable snapshot of the global Pi configuration from `~/.pi/agent`.
 ## Included
 
 - Pi defaults: GitHub Dark Default theme, OpenAI Codex, `gpt-5.6-sol`, and high reasoning effort
-- Main-agent Auto mode by default: routine actions run automatically while destructive or security-critical actions require approval and send desktop notifications; Shift+Tab cycles green Auto, yellow read-only Plan, and red bypass-all modes
+- Main-agent Auto mode by default: routine actions run automatically while destructive, security-critical, or `AGENTS.md`-violating actions require approval and send desktop notifications; Shift+Tab cycles green Auto, yellow read-only Plan, and red bypass-all modes
+- Ctrl+C or Cmd+C interrupts an active turn without clearing an idle draft; a second press exits Pi
+- Clipboard images appear as compact numbered placeholders such as `[Image #1]` instead of temporary file paths
 - Codex usage and reset-status extension (`/usage`)
 - Reasoning effort selector (`/effort`)
-- Responsive telemetry footer with context gauge, token traffic, cache efficiency, model, and reasoning level
+- Compact footer with project, branch, model, reasoning level, context gauge, and active mode
 - Desktop turn-complete notifications with a short response overview (`/notifications`)
 - MCP manager (`/mcp`) with Context7 enabled
 - Background terminals for servers, watchers, and long-running commands (`/ps`)

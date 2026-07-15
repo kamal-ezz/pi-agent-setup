@@ -166,24 +166,6 @@ function formatPercent(percent: number): string {
 	return Number.isInteger(percent) ? String(percent) : percent.toFixed(1);
 }
 
-function formatStatus(snapshot: UsageSnapshot, ctx: ExtensionContext): string {
-	const parts: string[] = [];
-	for (const window of [snapshot.primary, snapshot.secondary]) {
-		if (!window) continue;
-		const plain = `${windowLabel(window)} ${formatPercent(window.usedPercent)}%`;
-		const colored =
-			window.usedPercent >= 100
-				? ctx.ui.theme.fg("error", plain)
-				: window.usedPercent >= 80
-					? ctx.ui.theme.fg("warning", plain)
-					: ctx.ui.theme.fg("dim", plain);
-		parts.push(`${colored} ${ctx.ui.theme.fg("dim", `↻${timeUntil(window.resetAtMs)}`)}`);
-	}
-	const resetCount = `resets ×${snapshot.resetCredits}`;
-	parts.push(snapshot.resetCredits > 0 ? ctx.ui.theme.fg("accent", resetCount) : ctx.ui.theme.fg("dim", resetCount));
-	return `${ctx.ui.theme.fg("dim", "Codex")} ${parts.join(ctx.ui.theme.fg("dim", " · "))}`;
-}
-
 function formatDetails(snapshot: UsageSnapshot): string {
 	const lines = [`Codex usage${snapshot.planType ? ` (${snapshot.planType})` : ""}`];
 	for (const window of [snapshot.primary, snapshot.secondary]) {
@@ -205,11 +187,8 @@ export default function (pi: ExtensionAPI) {
 	let sessionGeneration = 0;
 
 	function updateStatus(ctx: ExtensionContext): void {
-		if (!isCodex(ctx) || !snapshot) {
-			ctx.ui.setStatus("codex-usage", undefined);
-			return;
-		}
-		ctx.ui.setStatus("codex-usage", formatStatus(snapshot, ctx));
+		// Usage remains available through /usage, but does not occupy the footer.
+		ctx.ui.setStatus("codex-usage", undefined);
 	}
 
 	async function refresh(ctx: ExtensionContext, force = false): Promise<UsageSnapshot | undefined> {
