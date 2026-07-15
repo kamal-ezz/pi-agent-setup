@@ -4,17 +4,22 @@ A portable snapshot of the global Pi configuration from `~/.pi/agent`.
 
 ## Included
 
-- Pi defaults: dark theme, OpenAI Codex, `gpt-5.6-sol`, and high reasoning effort
+- Pi defaults: GitHub Dark Default theme, OpenAI Codex, `gpt-5.6-sol`, and high reasoning effort
 - Codex usage and reset-status extension (`/usage`)
 - Reasoning effort selector (`/effort`)
 - Responsive telemetry footer with context gauge, token traffic, cache efficiency, model, and reasoning level
 - Desktop turn-complete notifications with a short response overview (`/notifications`)
 - MCP manager (`/mcp`) with Context7 enabled
-- Frontend design skill
+- Background terminals for servers, watchers, and long-running commands (`/ps`)
+- Interactive local changes browser (`/diff`)
+- Pi, Claude Code, and Codex subagents with background execution and takeover UI (`/subagents`)
+- Frontend design, background terminal, and subagent skills
 
 ## Install
 
-Requirements: Pi, Node.js 18 or newer, and npm. Desktop notifications additionally require `notify-send`.
+Requirements: Pi, Node.js 20 or newer, npm, and Git. Desktop notifications additionally require `notify-send`.
+
+Pi-backed subagents work with the installed Pi models. Claude Code and Codex subagents additionally require their respective CLIs to be installed and authenticated.
 
 ```bash
 git clone git@github.com:kamal-ezz/pi-agent-setup.git
@@ -26,7 +31,7 @@ The installer:
 
 1. Copies the managed files to `${PI_AGENT_DIR:-~/.pi/agent}`.
 2. Backs up changed managed files under `~/.pi/agent/backups/`.
-3. Installs the MCP extension's production dependencies with `npm ci`.
+3. Installs production dependencies for the MCP, background terminal, diff browser, and subagent extensions with `npm ci`.
 
 Restart Pi after installation. On a new machine, authenticate separately with `/login` inside Pi.
 
@@ -47,14 +52,21 @@ git diff
 .
 ├── settings.json
 ├── mcp.json
+├── themes/
+│   └── github-dark-default.json
 ├── extensions/
+│   ├── background-terminals/
 │   ├── codex-usage.ts
+│   ├── context7-mcp/
+│   ├── diff/
 │   ├── effort.ts
 │   ├── hide-token-cost.ts
-│   ├── turn-notifications.ts
-│   └── context7-mcp/
+│   ├── subagents/
+│   └── turn-notifications.ts
 └── skills/
-    └── frontend-design/
+    ├── background-terminals/
+    ├── frontend-design/
+    └── subagents/
 ```
 
 ## Security

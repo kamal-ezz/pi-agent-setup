@@ -16,6 +16,26 @@ managed_files=(
   extensions/context7-mcp/package-lock.json
   skills/frontend-design/SKILL.md
   skills/frontend-design/LICENSE.txt
+  tsconfig.json
+)
+
+managed_directories=(
+  extensions/background-terminals
+  extensions/diff
+  extensions/subagents
+  skills/background-terminals
+  skills/subagents
+  themes
+)
+
+# Version-controlled and unignored files in these directories form the
+# allowlist. Gitignored package data and other machine-local additions are
+# excluded even when they exist in the repository worktree.
+while IFS= read -r -d '' relative_path; do
+  managed_files+=("$relative_path")
+done < <(
+  git -C "$repo_dir" ls-files --cached --others --exclude-standard -z -- \
+    "${managed_directories[@]}"
 )
 
 for relative_path in "${managed_files[@]}"; do

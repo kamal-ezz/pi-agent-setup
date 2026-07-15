@@ -19,6 +19,25 @@ managed_files=(
   extensions/context7-mcp/package-lock.json
   skills/frontend-design/SKILL.md
   skills/frontend-design/LICENSE.txt
+  tsconfig.json
+)
+
+managed_directories=(
+  extensions/background-terminals
+  extensions/diff
+  extensions/subagents
+  skills/background-terminals
+  skills/subagents
+  themes
+)
+
+# Honor the repository ignore rules so installed dependencies and other
+# machine-local files are never treated as managed setup files.
+while IFS= read -r -d '' relative_path; do
+  managed_files+=("$relative_path")
+done < <(
+  git -C "$repo_dir" ls-files --cached --others --exclude-standard -z -- \
+    "${managed_directories[@]}"
 )
 
 mkdir -p "$agent_dir"
@@ -38,6 +57,9 @@ for relative_path in "${managed_files[@]}"; do
 done
 
 npm ci --omit=dev --prefix "${agent_dir}/extensions/context7-mcp"
+for extension in background-terminals diff subagents; do
+  npm ci --omit=dev --ignore-scripts --prefix "${agent_dir}/extensions/${extension}"
+done
 
 printf 'Installed Pi setup in %s\n' "$agent_dir"
 if [[ "$backed_up" == true ]]; then
