@@ -1,0 +1,23 @@
+# Credentials and machine-local state
+auth.json
+trust.json
+sessions/
+bin/
+backups/
+
+# Installed package data
+node_modules/
+**/node_modules/
+npm/
+git/
+
+# Secrets and local overrides
+.env
+.env.*
+*.local
+
+# Temporary/editor files
+*.tmp
+.DS_Store
+.idea/
+.vscode/
