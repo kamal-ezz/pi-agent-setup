@@ -16,6 +16,7 @@ import autoPlanMode, {
   prepareReviewAction,
   terminalTitle,
   trustedReadOnlyToolNames,
+  unknownStreamingSlashCommand,
 } from "./index.ts";
 
 test("advisor asks only for destructive or security-critical actions", () => {
@@ -52,6 +53,30 @@ test("input arrow prefixes only the first editable line", () => {
     ["────", "➜  text", " wrap", "────"],
   );
   assert.deepEqual(addInputArrow(["──", "", "──"], 2, "➜"), ["──", "➜ ", "──"]);
+});
+
+test("unknown slash commands cannot become steering messages", () => {
+  const known = ["subagents", "skill:mermaid-diagram", "review"];
+  assert.equal(
+    unknownStreamingSlashCommand("/not-a-command argument", "steer", known),
+    "not-a-command",
+  );
+  assert.equal(
+    unknownStreamingSlashCommand("/subagents", "steer", known),
+    undefined,
+  );
+  assert.equal(
+    unknownStreamingSlashCommand("/skill:mermaid-diagram draw", "steer", known),
+    undefined,
+  );
+  assert.equal(
+    unknownStreamingSlashCommand("/not-a-command", "followUp", known),
+    undefined,
+  );
+  assert.equal(
+    unknownStreamingSlashCommand("please /not-a-command", "steer", known),
+    undefined,
+  );
 });
 
 test("clipboard images render as numbered placeholders and submit real paths", () => {
@@ -254,6 +279,10 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
       commands.set(name, { handler: options.handler });
     },
     getActiveTools: () => [...activeTools],
+    getCommands: () => [
+      { name: "subagents", source: "extension" },
+      { name: "skill:mermaid-diagram", source: "skill" },
+    ],
     setActiveTools(tools: string[]) {
       activeTools = [...tools];
     },
@@ -326,6 +355,28 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
   assert.ok(shortcuts.has("super+c"));
   await commands.get("clear")?.handler("", ctx);
   assert.equal(newSessions, 1);
+
+  const blockedUnknownCommand = await handlers.get("input")?.(
+    {
+      text: "/not-a-command now",
+      streamingBehavior: "steer",
+      source: "interactive",
+    },
+    ctx,
+  );
+  assert.deepEqual(blockedUnknownCommand, { action: "handled" });
+  assert.equal(notifications.at(-1), "Unknown command: /not-a-command");
+  assert.equal(
+    await handlers.get("input")?.(
+      {
+        text: "/skill:mermaid-diagram draw a flowchart",
+        streamingBehavior: "steer",
+        source: "interactive",
+      },
+      ctx,
+    ),
+    undefined,
+  );
 
   await handlers.get("session_start")?.({ type: "session_start" }, ctx);
   assert.equal(statuses.at(-1), "◆ auto");

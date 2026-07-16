@@ -161,6 +161,21 @@ export function createInterruptHandler(
   };
 }
 
+export function unknownStreamingSlashCommand(
+  text: string,
+  streamingBehavior: "steer" | "followUp" | undefined,
+  knownCommandNames: Iterable<string>,
+): string | undefined {
+  if (streamingBehavior !== "steer") return undefined;
+  const match = text.trim().match(/^\/([^\s]+)/);
+  if (!match) return undefined;
+  const commandName = match[1]!;
+  for (const knownName of knownCommandNames) {
+    if (knownName === commandName) return undefined;
+  }
+  return commandName;
+}
+
 export function formatAgentInstructions(
   contextFiles: readonly ContextFile[] | undefined,
 ): string {
@@ -632,6 +647,17 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
     }
     return undefined;
   }
+
+  pi.on("input", async (event, ctx) => {
+    const unknownCommand = unknownStreamingSlashCommand(
+      event.text,
+      event.streamingBehavior,
+      pi.getCommands().map((command) => command.name),
+    );
+    if (!unknownCommand) return;
+    ctx.ui.notify(`Unknown command: /${unknownCommand}`, "warning");
+    return { action: "handled" };
+  });
 
   pi.registerCommand("clear", {
     description: "Start a fresh empty session",
