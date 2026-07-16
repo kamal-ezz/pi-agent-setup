@@ -1,9 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  preserveViewportOffset,
   reconcileDashboardSelection,
+  setDashboardSelectionIndex,
   type DashboardSelection,
 } from "./src/ui/takeover.ts";
+
+test("dashboard paging clamps at the first and last subagent", () => {
+  const subagents = Array.from({ length: 20 }, (_, index) => ({
+    id: `sa-${index + 1}`,
+  }));
+  const selection: DashboardSelection = { id: "sa-10", index: 9 };
+
+  setDashboardSelectionIndex(selection, subagents, selection.index - 50);
+  assert.deepEqual(selection, { id: "sa-1", index: 0 });
+  setDashboardSelectionIndex(selection, subagents, selection.index + 50);
+  assert.deepEqual(selection, { id: "sa-20", index: 19 });
+});
+
+test("streaming transcript stays anchored while the user reads older lines", () => {
+  assert.equal(preserveViewportOffset(12, 100, 107), 19);
+  assert.equal(preserveViewportOffset(0, 100, 107), 0);
+  assert.equal(preserveViewportOffset(12, 100, 90), 12);
+});
 
 test("dashboard selection follows its subagent id and falls back by row", () => {
   const selection: DashboardSelection = { id: "sa-7", index: 6 };

@@ -6,7 +6,7 @@ A portable snapshot of the global Pi configuration from `~/.pi/agent`.
 
 - Pi defaults: GitHub Dark Default theme, OpenAI Codex, `gpt-5.6-sol`, and high reasoning effort
 - Main-agent Auto mode by default: routine actions run automatically while destructive, security-critical, or `AGENTS.md`-violating actions require approval with a persistent in-harness warning and desktop notification; Shift+Tab cycles green Auto, yellow read-only Plan, and red bypass-all modes
-- A mode-colored arrow prefixes the input bar; the terminal tab shows an animated spinner during active turns. Agent responses support natural, sparing Unicode emoji. `/clear` starts a fresh empty session, while Ctrl+C or Cmd+C restores an interrupted prompt without a notification or abort popup, and a second press exits Pi
+- A mode-colored arrow prefixes the input bar; the terminal tab shows an animated spinner during active turns. Conversation history uses a stable in-app viewport: mouse wheel and Page Up/Down scroll without streaming output snapping the view, while the editor and footer stay pinned. Hold Shift while dragging for native terminal text selection. Agent responses support natural, sparing Unicode emoji. `/clear` starts a fresh empty session, while Ctrl+C or Cmd+C restores an interrupted prompt without a notification or abort popup, and a second press exits Pi
 - Clipboard images appear as compact numbered placeholders such as `[Image #1]` instead of temporary file paths
 - Codex usage and reset extension (`/usage`) with a persistent in-harness and desktop warning when the five-hour allowance reaches 10% remaining
 - Reasoning effort selector (`/effort`)

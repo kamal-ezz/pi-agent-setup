@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  preserveViewportOffset,
   reconcileDashboardSelection,
+  setDashboardSelectionIndex,
   type DashboardSelection,
 } from "./src/ui/ps.ts";
 import {
@@ -31,6 +33,24 @@ test("dashboard selection follows its terminal id and falls back by row", () => 
 
   reconcileDashboardSelection(selection, []);
   assert.deepEqual(selection, { id: undefined, index: 0 });
+});
+
+test("dashboard paging clamps at the first and last terminal", () => {
+  const terminals = Array.from({ length: 20 }, (_, index) => ({
+    id: `bt-${index + 1}`,
+  }));
+  const selection: DashboardSelection = { id: "bt-10", index: 9 };
+
+  setDashboardSelectionIndex(selection, terminals, selection.index - 50);
+  assert.deepEqual(selection, { id: "bt-1", index: 0 });
+  setDashboardSelectionIndex(selection, terminals, selection.index + 50);
+  assert.deepEqual(selection, { id: "bt-20", index: 19 });
+});
+
+test("live output stays anchored while the user reads older lines", () => {
+  assert.equal(preserveViewportOffset(12, 100, 107), 19);
+  assert.equal(preserveViewportOffset(0, 100, 107), 0);
+  assert.equal(preserveViewportOffset(12, 100, 90), 12);
 });
 
 test("sanitizeText strips ANSI, tabs, and control characters", () => {

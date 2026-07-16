@@ -120,6 +120,18 @@ export function reconcileDashboardSelection(
   selection.id = terminals[selection.index]?.id;
 }
 
+export function setDashboardSelectionIndex(
+  selection: DashboardSelection,
+  terminals: ReadonlyArray<Pick<TerminalSnapshot, "id">>,
+  index: number,
+) {
+  selection.index = Math.max(
+    0,
+    Math.min(Math.max(0, terminals.length - 1), index),
+  );
+  selection.id = terminals[selection.index]?.id;
+}
+
 class TerminalDashboard implements Component {
   private tui: TUI;
   private theme: Theme;
@@ -153,6 +165,10 @@ class TerminalDashboard implements Component {
 
   private terminals(): ReadonlyArray<TerminalSnapshot> {
     return this.view.list();
+  }
+
+  private pageSize(): number {
+    return Math.max(6, (this.tui.terminal.rows || 30) - 5);
   }
 
   private cleanup() {
@@ -201,6 +217,33 @@ class TerminalDashboard implements Component {
       }
       return;
     }
+    if (this.keybindings.matches(data, "tui.select.pageUp")) {
+      setDashboardSelectionIndex(
+        this.selection,
+        terminals,
+        this.selection.index - this.pageSize(),
+      );
+      this.tui.requestRender();
+      return;
+    }
+    if (this.keybindings.matches(data, "tui.select.pageDown")) {
+      setDashboardSelectionIndex(
+        this.selection,
+        terminals,
+        this.selection.index + this.pageSize(),
+      );
+      this.tui.requestRender();
+      return;
+    }
+    if (data === "g" || data === "G") {
+      setDashboardSelectionIndex(
+        this.selection,
+        terminals,
+        data === "g" ? 0 : terminals.length - 1,
+      );
+      this.tui.requestRender();
+      return;
+    }
     if (data === "x") {
       const snap = terminals[this.selection.index];
       if (snap && snap.status === "running") this.view.requestKill(snap.id);
@@ -231,11 +274,10 @@ class TerminalDashboard implements Component {
     const terminals = this.terminals();
     reconcileDashboardSelection(this.selection, terminals);
 
-    const rows = this.tui.terminal.rows || 30;
     // Render exactly terminal rows - 1 so the overlay covers the header,
     // chat, editor, and extra footer lines while leaving pi's final footer
     // row visible.
-    const bodyHeight = Math.max(6, rows - 5);
+    const bodyHeight = this.pageSize();
     const innerWidth = width - 2;
 
     const lines: string[] = [];
@@ -287,7 +329,7 @@ class TerminalDashboard implements Component {
       truncateToWidth(
         theme.fg(
           "dim",
-          `  ${configuredKeys(this.keybindings, "tui.select.up")}/${configuredKeys(this.keybindings, "tui.select.down")}/jk select · ${configuredKeys(this.keybindings, "tui.select.confirm")} inspect · x kill · ${configuredKeys(this.keybindings, "tui.select.cancel")} close`,
+          `  ${configuredKeys(this.keybindings, "tui.select.up")}/${configuredKeys(this.keybindings, "tui.select.down")}/jk select · ${configuredKeys(this.keybindings, "tui.select.pageUp")}/${configuredKeys(this.keybindings, "tui.select.pageDown")} page · g/G first/last · ${configuredKeys(this.keybindings, "tui.select.confirm")} inspect · x kill · ${configuredKeys(this.keybindings, "tui.select.cancel")} close`,
         ),
         width,
       ),
@@ -363,6 +405,16 @@ class TerminalDashboard implements Component {
 
 const OUTPUT_SCROLL_STEP = 6;
 
+export function preserveViewportOffset(
+  offset: number,
+  previousLineCount: number,
+  currentLineCount: number,
+): number {
+  return offset > 0 && currentLineCount > previousLineCount
+    ? offset + currentLineCount - previousLineCount
+    : offset;
+}
+
 class TerminalDetailView implements Component {
   private tui: TUI;
   private theme: Theme;
@@ -375,6 +427,7 @@ class TerminalDetailView implements Component {
   private stream: "stdout" | "stderr" = "stdout";
   /** Scroll offset in lines from the bottom. 0 = pinned to bottom (live tail). */
   private scrollOffset = 0;
+  private previousOutputLineCount = 0;
   private lineCache = createOutputLineCache();
   private unsubscribe: () => void;
   private renderTimer?: ReturnType<typeof setTimeout>;
@@ -444,6 +497,7 @@ class TerminalDetailView implements Component {
       this.stream = this.stream === "stdout" ? "stderr" : "stdout";
       this.lineCache = createOutputLineCache();
       this.scrollOffset = 0;
+      this.previousOutputLineCount = 0;
       this.tui.requestRender();
       return;
     }
@@ -553,6 +607,12 @@ class TerminalDetailView implements Component {
       // monotonically increasing proxy for a version counter.
       buffer.totalBytes;
     const output = this.lineCache.get(buffer.text, version, width - 2);
+    this.scrollOffset = preserveViewportOffset(
+      this.scrollOffset,
+      this.previousOutputLineCount,
+      output.length,
+    );
+    this.previousOutputLineCount = output.length;
     const viewport = this.viewportHeight();
 
     const noteRows: string[] = [];

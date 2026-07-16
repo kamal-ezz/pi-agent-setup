@@ -1,5 +1,8 @@
 import { basename } from "node:path";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionContext,
+  KeybindingsManager,
+} from "@earendil-works/pi-coding-agent";
 import {
   Key,
   matchesKey,
@@ -11,6 +14,13 @@ import { runCommand } from "./process.ts";
 
 const DIFF_SCROLL_STEP = 5;
 const MAX_DIFF_LINES = 20_000;
+
+function configuredKeys(
+  keybindings: KeybindingsManager,
+  binding: Parameters<KeybindingsManager["getKeys"]>[0],
+) {
+  return keybindings.getKeys(binding).join("/") || "unbound";
+}
 
 interface ChangedPath {
   path: string;
@@ -158,7 +168,7 @@ export async function showChangedFiles(
   if (ctx.mode !== "tui") return;
 
   await ctx.ui.custom<void>(
-    (tui, theme, _keybindings, done) => {
+    (tui, theme, keybindings, done) => {
       let focus: "files" | "diff" = "files";
       let selectedIndex = 0;
       let sidebarOffset = 0;
@@ -227,15 +237,15 @@ export async function showChangedFiles(
 
       function handleInput(data: string) {
         if (focus === "files") {
-          if (matchesKey(data, Key.escape)) {
+          if (keybindings.matches(data, "tui.select.cancel")) {
             done(undefined);
             return;
           }
-          if (matchesKey(data, Key.down) || data === "j") {
+          if (keybindings.matches(data, "tui.select.down") || data === "j") {
             moveFile(1);
             return;
           }
-          if (matchesKey(data, Key.up) || data === "k") {
+          if (keybindings.matches(data, "tui.select.up") || data === "k") {
             moveFile(-1);
             return;
           }
@@ -254,7 +264,7 @@ export async function showChangedFiles(
             return;
           }
           if (
-            matchesKey(data, Key.enter) ||
+            keybindings.matches(data, "tui.select.confirm") ||
             matchesKey(data, Key.space) ||
             matchesKey(data, Key.right) ||
             data === "l"
@@ -266,7 +276,7 @@ export async function showChangedFiles(
         }
 
         if (
-          matchesKey(data, Key.escape) ||
+          keybindings.matches(data, "tui.select.cancel") ||
           matchesKey(data, Key.left) ||
           data === "h"
         ) {
@@ -274,19 +284,31 @@ export async function showChangedFiles(
           tui.requestRender();
           return;
         }
-        if (matchesKey(data, Key.down) || data === "j") {
+        if (
+          keybindings.matches(data, "tui.editor.cursorDown") ||
+          data === "j"
+        ) {
           moveDiff(DIFF_SCROLL_STEP);
           return;
         }
-        if (matchesKey(data, Key.up) || data === "k") {
+        if (
+          keybindings.matches(data, "tui.editor.cursorUp") ||
+          data === "k"
+        ) {
           moveDiff(-DIFF_SCROLL_STEP);
           return;
         }
-        if (matchesKey(data, Key.ctrl("d"))) {
+        if (
+          keybindings.matches(data, "tui.editor.pageDown") ||
+          matchesKey(data, Key.ctrl("d"))
+        ) {
           moveDiff(Math.max(1, Math.floor(bodyHeight() / 2)));
           return;
         }
-        if (matchesKey(data, Key.ctrl("u"))) {
+        if (
+          keybindings.matches(data, "tui.editor.pageUp") ||
+          matchesKey(data, Key.ctrl("u"))
+        ) {
           moveDiff(-Math.max(1, Math.floor(bodyHeight() / 2)));
           return;
         }
@@ -378,8 +400,8 @@ export async function showChangedFiles(
 
         const help =
           focus === "files"
-            ? "j/k or ↑/↓ select · enter/space/l open diff · esc close"
-            : "j/k or ↑/↓ scroll · ctrl-d/u page · g/G top/bottom · esc/h files";
+            ? `j/k or ${configuredKeys(keybindings, "tui.select.up")}/${configuredKeys(keybindings, "tui.select.down")} select · ${configuredKeys(keybindings, "tui.select.confirm")}/space/l open diff · ${configuredKeys(keybindings, "tui.select.cancel")} close`
+            : `j/k or ${configuredKeys(keybindings, "tui.editor.cursorUp")}/${configuredKeys(keybindings, "tui.editor.cursorDown")} scroll · ${configuredKeys(keybindings, "tui.editor.pageUp")}/${configuredKeys(keybindings, "tui.editor.pageDown")} or ctrl-u/d page · g/G top/bottom · ${configuredKeys(keybindings, "tui.select.cancel")}/h files`;
         lines.push(border(width, help, false));
         return lines;
       }

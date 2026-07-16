@@ -26,9 +26,11 @@ import {
   planToolNames,
   type AdvisorDecision,
 } from "./policy.ts";
+import { installSmoothScrolling } from "./smooth-scroll.ts";
 
 const MODE_ENTRY_TYPE = "auto-plan-mode";
 const STATUS_KEY = "auto-plan-mode";
+const SCROLL_STATUS_KEY = "conversation-scroll";
 const ADVISOR_APPROVAL_WIDGET_KEY = "auto-plan-approval";
 const REVIEW_MAX_TOKENS = 300;
 const REVIEW_INPUT_LIMIT = 50_000;
@@ -290,6 +292,7 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
   let submittedPrompt: string | undefined;
   let titleSpinnerTimer: ReturnType<typeof setInterval> | undefined;
   let titleSpinnerFrame = 0;
+  let smoothScrollCleanup: (() => void) | undefined;
   let agentInstructions = "(No AGENTS.md instructions were loaded.)";
 
   const stopTitleSpinner = (ctx: ExtensionContext) => {
@@ -600,10 +603,32 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
       }
     }
 
-    ctx.ui.setEditorComponent(
-      (tui, theme, keybindings) =>
-        new ModeColorEditor(tui, theme, keybindings),
-    );
+    ctx.ui.setEditorComponent((tui, theme, keybindings) => {
+      const editor = new ModeColorEditor(tui, theme, keybindings);
+      // setEditorComponent mounts the returned editor after this factory exits.
+      // Activate the viewport pager in the next microtask so its root container
+      // can be located without depending on Pi's private interactive-mode fields.
+      queueMicrotask(() => {
+        smoothScrollCleanup?.();
+        smoothScrollCleanup = installSmoothScrolling(
+          tui,
+          editor,
+          keybindings,
+          (offset) => {
+            ctx.ui.setStatus(
+              SCROLL_STATUS_KEY,
+              offset > 0
+                ? ctx.ui.theme.fg(
+                    "accent",
+                    "↑ history · wheel/pgup/pgdn",
+                  )
+                : undefined,
+            );
+          },
+        );
+      });
+      return editor;
+    });
     restoreModeFromBranch(ctx);
   });
 
@@ -624,6 +649,9 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async (_event, ctx) => {
     stopTitleSpinner(ctx);
+    smoothScrollCleanup?.();
+    smoothScrollCleanup = undefined;
+    ctx.ui.setStatus(SCROLL_STATUS_KEY, undefined);
     ctx.ui.setWidget(ADVISOR_APPROVAL_WIDGET_KEY, undefined);
     // Pi preserves the active tool set across /reload. Restore the pre-Plan
     // snapshot before teardown so a reloaded instance can capture all tools.

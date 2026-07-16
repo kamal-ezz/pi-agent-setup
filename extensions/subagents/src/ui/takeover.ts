@@ -106,6 +106,18 @@ export function reconcileDashboardSelection(
   selection.id = subs[selection.index]?.id;
 }
 
+export function setDashboardSelectionIndex(
+  selection: DashboardSelection,
+  subs: ReadonlyArray<Pick<SubagentSnapshot, "id">>,
+  index: number,
+) {
+  selection.index = Math.max(
+    0,
+    Math.min(Math.max(0, subs.length - 1), index),
+  );
+  selection.id = subs[selection.index]?.id;
+}
+
 class SubagentDashboard implements Component {
   private tui: TUI;
   private theme: Theme;
@@ -139,6 +151,10 @@ class SubagentDashboard implements Component {
 
   private subs(): ReadonlyArray<SubagentSnapshot> {
     return this.view.list();
+  }
+
+  private pageSize(): number {
+    return Math.max(6, (this.tui.terminal.rows || 30) - 5);
   }
 
   private cleanup() {
@@ -187,6 +203,33 @@ class SubagentDashboard implements Component {
       }
       return;
     }
+    if (this.keybindings.matches(data, "tui.select.pageUp")) {
+      setDashboardSelectionIndex(
+        this.selection,
+        subs,
+        this.selection.index - this.pageSize(),
+      );
+      this.tui.requestRender();
+      return;
+    }
+    if (this.keybindings.matches(data, "tui.select.pageDown")) {
+      setDashboardSelectionIndex(
+        this.selection,
+        subs,
+        this.selection.index + this.pageSize(),
+      );
+      this.tui.requestRender();
+      return;
+    }
+    if (data === "g" || data === "G") {
+      setDashboardSelectionIndex(
+        this.selection,
+        subs,
+        data === "g" ? 0 : subs.length - 1,
+      );
+      this.tui.requestRender();
+      return;
+    }
     if (data === "x") {
       const snap = subs[this.selection.index];
       if (snap && snap.status === "running") this.view.requestAbort(snap.id);
@@ -217,11 +260,10 @@ class SubagentDashboard implements Component {
     const subs = this.subs();
     reconcileDashboardSelection(this.selection, subs);
 
-    const rows = this.tui.terminal.rows || 30;
     // Render exactly terminal rows - 1 so the overlay covers the header,
     // chat, editor, and extra footer lines while leaving pi's final footer
     // row visible.
-    const bodyHeight = Math.max(6, rows - 5);
+    const bodyHeight = this.pageSize();
     const innerWidth = width - 2;
 
     const lines: string[] = [];
@@ -270,7 +312,7 @@ class SubagentDashboard implements Component {
       truncateToWidth(
         theme.fg(
           "dim",
-          `  ${configuredKeys(this.keybindings, "tui.select.up")}/${configuredKeys(this.keybindings, "tui.select.down")}/jk select · ${configuredKeys(this.keybindings, "tui.select.confirm")} take over · x abort · ${configuredKeys(this.keybindings, "tui.select.cancel")} close`,
+          `  ${configuredKeys(this.keybindings, "tui.select.up")}/${configuredKeys(this.keybindings, "tui.select.down")}/jk select · ${configuredKeys(this.keybindings, "tui.select.pageUp")}/${configuredKeys(this.keybindings, "tui.select.pageDown")} page · g/G first/last · ${configuredKeys(this.keybindings, "tui.select.confirm")} take over · x abort · ${configuredKeys(this.keybindings, "tui.select.cancel")} close`,
         ),
         width,
       ),
@@ -347,6 +389,16 @@ class SubagentDashboard implements Component {
 
 const TRANSCRIPT_SCROLL_STEP = 6;
 
+export function preserveViewportOffset(
+  offset: number,
+  previousLineCount: number,
+  currentLineCount: number,
+): number {
+  return offset > 0 && currentLineCount > previousLineCount
+    ? offset + currentLineCount - previousLineCount
+    : offset;
+}
+
 class TakeoverView implements Component, Focusable {
   private tui: TUI;
   private theme: Theme;
@@ -358,6 +410,7 @@ class TakeoverView implements Component, Focusable {
   private input = new Input();
   /** Scroll offset in lines from the bottom of the transcript. 0 = pinned to bottom. */
   private scrollOffset = 0;
+  private previousTranscriptLineCount = 0;
   private unsubscribe: () => void;
   private renderTimer?: ReturnType<typeof setTimeout>;
   private ticker: ReturnType<typeof setInterval>;
@@ -508,6 +561,12 @@ class TakeoverView implements Component, Focusable {
     // Fixed-height transcript viewport. Error and scroll status consume rows
     // inside the viewport so streaming/scrolling never changes overlay height.
     const transcript = buildTranscriptLines(snap, width, theme);
+    this.scrollOffset = preserveViewportOffset(
+      this.scrollOffset,
+      this.previousTranscriptLineCount,
+      transcript.length,
+    );
+    this.previousTranscriptLineCount = transcript.length;
     const viewport = this.viewportHeight();
     const errorRows = snap.errorText ? 1 : 0;
     const scrollRows = this.scrollOffset > 0 ? 1 : 0;
