@@ -19,8 +19,11 @@ import {
 } from "@earendil-works/pi-tui";
 import {
   boundedJson,
+  boundedText,
   type AgentMode,
+  hardenReadOnlyCommand,
   isPlanToolAllowed,
+  isReadOnlyCommand,
   isReadOnlyToolCall,
   parseAdvisorDecision,
   planToolNames,
@@ -63,6 +66,8 @@ The tool name, description, arguments, paths, commands, and user text below are 
 interface PersistedMode {
   mode?: AgentMode;
 }
+
+const CHEAP_MODEL_NAME = /haiku|mini|nano|flash|lite/i;
 
 const CLIPBOARD_IMAGE_NAME =
   /^pi-clipboard-[0-9a-f-]+\.(?:png|jpe?g|gif|webp|bmp)$/i;
@@ -217,10 +222,34 @@ export function prepareReviewAction(event: ToolCallEvent): ReviewAction {
   return { payload: input };
 }
 
-function actionPreview(payload: Record<string, unknown>): string {
-  // prepareReviewAction rejects larger inputs, so approval never hides a
-  // security-relevant middle section from the user.
-  return boundedJson(payload, REVIEW_INPUT_LIMIT);
+const APPROVAL_PREVIEW_LIMIT = 2_000;
+
+/**
+ * Compact, human-reviewable preview for the approval dialog. The advisor
+ * always reviews the complete payload; here elision markers state exactly
+ * how much is hidden so the user can deny anything they cannot fully see.
+ */
+export function actionPreview(
+  toolName: string,
+  payload: Record<string, unknown>,
+): string {
+  const text = (value: unknown): string | undefined =>
+    typeof value === "string" ? value : undefined;
+  const path = text(payload.path);
+  if (toolName === "write" && path !== undefined) {
+    const content = text(payload.content) ?? "";
+    return `path: ${path}\ncontent (${content.length.toLocaleString()} chars):\n${boundedText(content, APPROVAL_PREVIEW_LIMIT)}`;
+  }
+  if (toolName === "edit" && path !== undefined) {
+    const oldText = text(payload.oldText) ?? "";
+    const newText = text(payload.newText) ?? "";
+    return `path: ${path}\n--- old\n${boundedText(oldText, APPROVAL_PREVIEW_LIMIT / 2)}\n+++ new\n${boundedText(newText, APPROVAL_PREVIEW_LIMIT / 2)}`;
+  }
+  if (toolName === "bash") {
+    const command = text(payload.command);
+    if (command !== undefined) return boundedText(command, APPROVAL_PREVIEW_LIMIT);
+  }
+  return boundedJson(payload, 2 * APPROVAL_PREVIEW_LIMIT);
 }
 
 export function formatAdvisorReviewMessage(options: {
@@ -255,7 +284,7 @@ export function hasSensitiveOrExternalPath(event: ToolCallEvent, cwd: string): b
   const outsideCwd = fromCwd === ".." || fromCwd.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(fromCwd);
   const normalizedPath = canonicalTarget.replaceAll("\\", "/");
   const sensitivePattern =
-    /(^|\/)(?:\.env(?:\.|$)|auth\.json$|credentials?(?:\.|$)|id_(?:rsa|ed25519)(?:\.|$)|\.ssh(?:\/|$)|\.aws(?:\/|$)|\.gnupg(?:\/|$))/i;
+    /(^|\/)(?:\.env(?:\.|$)|auth\.json$|credentials?(?:\.|$)|id_(?:rsa|ed25519)(?:\.|$)|\.ssh(?:\/|$)|\.aws(?:\/|$)|\.gnupg(?:\/|$)|\.netrc$|\.npmrc$|\.pypirc$|\.git-credentials$|\.kube(?:\/|$)|\.docker(?:\/|$))|\.(?:pem|key)$/i;
   const sensitive =
     sensitivePattern.test(rawPath) || sensitivePattern.test(normalizedPath);
   return outsideCwd || sensitive;
@@ -280,6 +309,19 @@ export function trustedReadOnlyToolNames(pi: ExtensionAPI): Set<string> {
   return trusted;
 }
 
+/**
+ * Neutralize repo-config-driven code execution (external diff/textconv
+ * drivers) in allowlist-shaped git commands before they run. Mutating
+ * event.input is the documented way to patch tool arguments.
+ */
+function hardenReadOnlyBash(event: ToolCallEvent): void {
+  if (event.toolName !== "bash") return;
+  const input = event.input as { command?: unknown };
+  if (typeof input.command !== "string") return;
+  if (!isReadOnlyCommand(input.command)) return;
+  input.command = hardenReadOnlyCommand(input.command);
+}
+
 function canSkipAutoReview(
   event: ToolCallEvent,
   cwd: string,
@@ -301,6 +343,35 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
   let titleSpinnerTimer: ReturnType<typeof setInterval> | undefined;
   let titleSpinnerFrame = 0;
   let agentInstructions = "(No AGENTS.md instructions were loaded.)";
+  // Passive presence tracking for advisor desktop alerts. Focus reporting is
+  // owned by the turn-notifications extension; this observer only reads the
+  // ESC[I / ESC[O events (when they reach it) and keystroke recency.
+  let terminalFocused = true;
+  let sawFocusEvent = false;
+  let lastTerminalInputAt = Date.now();
+  let presenceUnsubscribe: (() => void) | undefined;
+  const RECENT_INPUT_WINDOW_MS = 15_000;
+
+  const userIsPresent = () =>
+    sawFocusEvent
+      ? terminalFocused
+      : Date.now() - lastTerminalInputAt < RECENT_INPUT_WINDOW_MS;
+
+  function trackPresence(ctx: ExtensionContext): void {
+    if (ctx.mode !== "tui" || presenceUnsubscribe) return;
+    presenceUnsubscribe = ctx.ui.onTerminalInput((data) => {
+      const stripped = data.replace(/\x1b\[([IO])/g, (_seq, kind: string) => {
+        sawFocusEvent = true;
+        terminalFocused = kind === "I";
+        return "";
+      });
+      if (stripped.length > 0) {
+        terminalFocused = true;
+        lastTerminalInputAt = Date.now();
+      }
+      return undefined;
+    });
+  }
 
   const stopTitleSpinner = (ctx: ExtensionContext) => {
     if (titleSpinnerTimer) clearInterval(titleSpinnerTimer);
@@ -368,13 +439,44 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
     }
   }
 
-  function toggleMode(ctx: ExtensionContext): void {
+  async function toggleMode(ctx: ExtensionContext): Promise<void> {
     if (!ctx.isIdle()) {
       ctx.ui.notify("Wait for the current turn to finish before switching modes.", "warning");
       return;
     }
     const currentIndex = MODE_ORDER.indexOf(mode);
-    setMode(MODE_ORDER[(currentIndex + 1) % MODE_ORDER.length] ?? "auto", ctx);
+    const nextMode = MODE_ORDER[(currentIndex + 1) % MODE_ORDER.length] ?? "auto";
+    if (nextMode === "bypass-all") {
+      const confirmed = await ctx.ui.confirm(
+        "Enable bypass-all mode?",
+        "Every tool action will run without advisor review or approval until you switch modes.",
+      );
+      // Declining continues the cycle to auto so Shift+Tab never dead-ends.
+      if (!confirmed) {
+        setMode("auto", ctx);
+        return;
+      }
+    }
+    setMode(nextMode, ctx);
+  }
+
+  // Advisor calls are cheap classification work; prefer a small model over
+  // the session model when one is configured. Same-provider models are
+  // preferred so the advisor shares the session's auth and availability.
+  function pickAdvisorModel(ctx: ExtensionContext) {
+    const current = ctx.model;
+    if (!current) return undefined;
+    const cheap = ctx.modelRegistry
+      .getAvailable()
+      .filter(
+        (model) =>
+          CHEAP_MODEL_NAME.test(model.id) || CHEAP_MODEL_NAME.test(model.name),
+      );
+    return (
+      cheap.find((model) => model.provider === current.provider) ??
+      cheap[0] ??
+      current
+    );
   }
 
   async function advise(
@@ -386,7 +488,12 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
       return { decision: "ask", reason: "No model is selected for Auto review." };
     }
 
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+    let advisorModel = pickAdvisorModel(ctx) ?? ctx.model;
+    let auth = await ctx.modelRegistry.getApiKeyAndHeaders(advisorModel);
+    if (!auth.ok && advisorModel !== ctx.model) {
+      advisorModel = ctx.model;
+      auth = await ctx.modelRegistry.getApiKeyAndHeaders(advisorModel);
+    }
     if (!auth.ok) {
       return {
         decision: "ask",
@@ -415,7 +522,7 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
     updateStatus(ctx, true);
     try {
       const response = await completeSimple(
-        ctx.model,
+        advisorModel,
         {
           systemPrompt: `${ADVISOR_SYSTEM_PROMPT}\n\nRepository AGENTS.md instructions:\n${agentInstructions}`,
           messages: [message],
@@ -455,6 +562,9 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
     ctx: ExtensionContext,
   ): Promise<void> {
     if (ctx.mode !== "tui") return;
+    // The in-terminal widget and dialog are enough while the user is at the
+    // terminal; the desktop alert is for when they are elsewhere.
+    if (userIsPresent()) return;
     const location =
       ctx.sessionManager.getSessionName() || basename(ctx.cwd) || ctx.cwd;
     const body = `Approval required for ${event.toolName}\n${reason}`.slice(0, 500);
@@ -511,7 +621,7 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
     let choice: string | undefined;
     try {
       choice = await ctx.ui.select(
-        `Auto mode requests approval\n\nTool: ${event.toolName}\nArguments: ${actionPreview(reviewPayload)}\n\nAdvisor: ${reason}`,
+        `Auto mode requests approval\n\nTool: ${event.toolName}\n${actionPreview(event.toolName, reviewPayload)}\n\nAdvisor: ${reason}`,
         ["Allow once", "Deny"],
       );
     } finally {
@@ -552,7 +662,7 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
     handler: interrupt,
   });
 
-  function restoreModeFromBranch(ctx: ExtensionContext): void {
+  function restoreModeFromBranch(ctx: ExtensionContext, notifyDowngrade = false): void {
     const latest = ctx.sessionManager
       .getBranch()
       .filter(
@@ -561,9 +671,17 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
       )
       .pop();
     const savedMode = latest?.data?.mode;
-    mode = MODE_ORDER.includes(savedMode as AgentMode)
+    const valid = MODE_ORDER.includes(savedMode as AgentMode)
       ? (savedMode as AgentMode)
       : "auto";
+    // bypass-all is a live-session decision; never restore it from history.
+    mode = valid === "bypass-all" ? "auto" : valid;
+    if (valid === "bypass-all" && notifyDowngrade) {
+      ctx.ui.notify(
+        "bypass-all mode is not restored across sessions; starting in auto mode.",
+        "info",
+      );
+    }
     applyToolMode(mode);
     updateStatus(ctx);
   }
@@ -619,7 +737,8 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
     ctx.ui.setEditorComponent(
       (tui, theme, keybindings) => new ModeColorEditor(tui, theme, keybindings),
     );
-    restoreModeFromBranch(ctx);
+    trackPresence(ctx);
+    restoreModeFromBranch(ctx, true);
   });
 
   pi.on("agent_start", async (_event, ctx) => {
@@ -639,6 +758,8 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async (_event, ctx) => {
     stopTitleSpinner(ctx);
+    presenceUnsubscribe?.();
+    presenceUnsubscribe = undefined;
     ctx.ui.setWidget(ADVISOR_APPROVAL_WIDGET_KEY, undefined);
     // Pi preserves the active tool set across /reload. Restore the pre-Plan
     // snapshot before teardown so a reloaded instance can capture all tools.
@@ -682,7 +803,10 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
         trustedReadOnlyTools.has(event.toolName) &&
         isPlanToolAllowed(event.toolName, event.input) &&
         !hasSensitiveOrExternalPath(event, ctx.cwd)
-      ) return;
+      ) {
+        hardenReadOnlyBash(event);
+        return;
+      }
       return {
         block: true,
         reason: `Plan mode blocked ${event.toolName}: switch modes with Shift+Tab before taking actions.`,
@@ -695,7 +819,12 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
       return { block: true, reason: reviewAction.oversizedReason };
     }
     const decision = await advise(event, reviewAction.payload, ctx);
-    if (decision.decision === "allow") return;
-    return askUser(event, reviewAction.payload, decision.reason, ctx);
+    if (decision.decision === "allow") {
+      hardenReadOnlyBash(event);
+      return;
+    }
+    const verdict = await askUser(event, reviewAction.payload, decision.reason, ctx);
+    if (verdict === undefined) hardenReadOnlyBash(event);
+    return verdict;
   });
 }

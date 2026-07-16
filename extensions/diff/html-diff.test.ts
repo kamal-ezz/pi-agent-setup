@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { ChangedFile } from "./src/changed-files-view.ts";
 import {
+  parseDiffScope,
+  type ChangedFile,
+} from "./src/changed-files.ts";
+import {
+  buildSplitRows,
   diffBrowserLaunchers,
   parseDiffRows,
   renderDiffHtml,
@@ -51,6 +55,32 @@ test("hunk content beginning with repeated plus/minus remains a change", () => {
   );
 });
 
+test("buildSplitRows pairs deletion runs with the additions that follow", () => {
+  const split = buildSplitRows(parseDiffRows(file.diff));
+  const codeRows = split.filter((row) => !row.band);
+  assert.deepEqual(
+    codeRows.map((row) => [row.left?.kind, row.right?.kind]),
+    [
+      ["context", "context"],
+      ["deletion", "addition"],
+      [undefined, "addition"],
+    ],
+  );
+  // Bands carry the headers and hunk markers.
+  assert.equal(split.filter((row) => row.band).length, 5);
+});
+
+test("parseDiffScope understands staged, refs, and rejects option-like input", () => {
+  assert.deepEqual(parseDiffScope(undefined), { kind: "worktree" });
+  assert.deepEqual(parseDiffScope("  "), { kind: "worktree" });
+  assert.deepEqual(parseDiffScope("staged"), { kind: "staged" });
+  assert.deepEqual(parseDiffScope("--cached"), { kind: "staged" });
+  assert.deepEqual(parseDiffScope("main"), { kind: "ref", ref: "main" });
+  assert.deepEqual(parseDiffScope("HEAD~3"), { kind: "ref", ref: "HEAD~3" });
+  assert.throws(() => parseDiffScope("-R"), /Usage/);
+  assert.throws(() => parseDiffScope("main extra"), /Usage/);
+});
+
 test("Windows browser launchers never pass project paths through cmd.exe", () => {
   const path = "C:\\Temp\\repo&whoami\\changes.html";
   const launchers = diffBrowserLaunchers(path, "win32");
@@ -79,7 +109,9 @@ test("renderDiffHtml creates a self-contained, escaped review document", () => {
   assert.match(html, /<body class="hide-meta">/);
   assert.match(html, /<mark>old<\/mark>Value\(\);/);
   assert.match(html, /<mark>new<\/mark>Value\(\);/);
-  assert.match(html, /Patch dossier/);
+  assert.match(html, /class="diff-table split"/);
+  assert.match(html, /data-view="split"/);
+  assert.match(html, /Working tree vs HEAD/);
   assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;\.ts/);
   assert.match(html, /\+&lt;img src=x onerror=alert\(1\)&gt;/);
   assert.doesNotMatch(html, /<script>alert\(1\)<\/script>/);

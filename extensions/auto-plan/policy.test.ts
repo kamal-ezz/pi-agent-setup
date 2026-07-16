@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   boundedJson,
+  hardenReadOnlyCommand,
   isPlanToolAllowed,
   isReadOnlyCommand,
   parseAdvisorDecision,
@@ -28,6 +29,40 @@ test("plan mode rejects mutation and shell escape paths", () => {
   assert.equal(isReadOnlyCommand("git diff --output=patch.txt"), false);
   assert.equal(isReadOnlyCommand("npm audit --fix"), false);
   assert.equal(isReadOnlyCommand("cat file > copy"), false);
+});
+
+test("plan mode restricts jq to a stdin-only pipeline filter", () => {
+  assert.equal(isReadOnlyCommand("git log | jq .message"), true);
+  assert.equal(isReadOnlyCommand("git status --short | jq -r '.foo'"), true);
+  // Standalone jq reads arbitrary files, including secrets.
+  assert.equal(isReadOnlyCommand("jq . package.json"), false);
+  assert.equal(isReadOnlyCommand("jq . ~/.aws/credentials"), false);
+  assert.equal(isReadOnlyCommand("git log | jq '.a' /etc/passwd"), false);
+  assert.equal(isReadOnlyCommand("git log | jq --slurpfile s /tmp/x '.a'"), false);
+  assert.equal(isReadOnlyCommand("git log | jq -f filter.jq"), false);
+  // jq filters can read the process environment.
+  assert.equal(isReadOnlyCommand("git log | jq -n 'env'"), false);
+  assert.equal(isReadOnlyCommand("git log | jq '$ENV.SECRET'"), false);
+  // Field access named env is fine.
+  assert.equal(isReadOnlyCommand("git log | jq '.env.name'"), true);
+});
+
+test("diff-family git commands get external drivers disabled", () => {
+  assert.equal(
+    hardenReadOnlyCommand("git diff"),
+    "git diff --no-ext-diff --no-textconv",
+  );
+  assert.equal(
+    hardenReadOnlyCommand("git log --oneline -5"),
+    "git log --no-ext-diff --no-textconv --oneline -5",
+  );
+  assert.equal(
+    hardenReadOnlyCommand("git show HEAD~1 | jq -r '.a'"),
+    "git show --no-ext-diff --no-textconv HEAD~1 | jq -r '.a'",
+  );
+  // Non-diff subcommands take no diff options and are left untouched.
+  assert.equal(hardenReadOnlyCommand("git status --short"), "git status --short");
+  assert.equal(hardenReadOnlyCommand("git ls-files"), "git ls-files");
 });
 
 test("plan mode permits only read-only tools", () => {

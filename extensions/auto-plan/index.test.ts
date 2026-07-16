@@ -7,6 +7,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import autoPlanMode, {
   ADVISOR_SYSTEM_PROMPT,
   ClipboardImageMarkers,
+  actionPreview,
   addInputArrow,
   createInterruptHandler,
   formatAdvisorReviewMessage,
@@ -136,6 +137,20 @@ test("advisor message preserves a reviewable near-limit payload", () => {
   assert.doesNotMatch(message, /truncated/);
 });
 
+test("approval previews are compact with explicit elision", () => {
+  const write = actionPreview("write", { path: "a.txt", content: "x".repeat(5_000) });
+  assert.match(write, /^path: a\.txt/);
+  assert.match(write, /chars/);
+  assert.match(write, /omitted/);
+  assert.ok(write.length < 3_000);
+
+  const edit = actionPreview("edit", { path: "b.ts", oldText: "old", newText: "new" });
+  assert.match(edit, /--- old\nold\n\+\+\+ new\nnew/);
+
+  assert.equal(actionPreview("bash", { command: "rm -rf build" }), "rm -rf build");
+  assert.match(actionPreview("subagent_spawn", { task: "x" }), /"task": "x"/);
+});
+
 test("tool-name overrides are not trusted as read-only", () => {
   const trusted = trustedReadOnlyToolNames({
     getAllTools: () => [
@@ -183,6 +198,31 @@ test("sensitive and symlinked external reads require review", () => {
         project,
       ),
       true,
+    );
+    for (const sensitive of [
+      ".npmrc",
+      ".netrc",
+      ".git-credentials",
+      ".kube/config",
+      ".docker/config.json",
+      "certs/server.pem",
+      "signing.key",
+    ]) {
+      assert.equal(
+        hasSensitiveOrExternalPath(
+          { type: "tool_call", toolCallId: "4", toolName: "read", input: { path: sensitive } },
+          project,
+        ),
+        true,
+        sensitive,
+      );
+    }
+    assert.equal(
+      hasSensitiveOrExternalPath(
+        { type: "tool_call", toolCallId: "5", toolName: "read", input: { path: "src/keyboard.ts" } },
+        project,
+      ),
+      false,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -240,6 +280,9 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
     })),
   } as any;
 
+  let confirmResult = true;
+  const confirmPrompts: string[] = [];
+  let terminalInputListener: ((data: string) => unknown) | undefined;
   const ctx = {
     isIdle: () => true,
     hasUI: true,
@@ -258,7 +301,17 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
       theme: { fg: (_color: string, value: string) => value },
       setStatus: (_key: string, value: string) => statuses.push(value),
       notify: (message: string) => notifications.push(message),
+      confirm: async (title: string) => {
+        confirmPrompts.push(title);
+        return confirmResult;
+      },
       select: async () => "Deny",
+      onTerminalInput: (listener: (data: string) => unknown) => {
+        terminalInputListener = listener;
+        return () => {
+          terminalInputListener = undefined;
+        };
+      },
       setEditorComponent: () => {},
       setEditorText: () => {},
       setTitle: () => {},
@@ -300,10 +353,22 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
   );
   assert.equal(externalRead.block, true);
 
+  // Allowed plan-mode git diffs run with repo-config drivers disabled.
+  const planBash = {
+    type: "tool_call",
+    toolCallId: "1c",
+    toolName: "bash",
+    input: { command: "git diff HEAD" },
+  };
+  const allowedBash = await handlers.get("tool_call")?.(planBash, ctx);
+  assert.equal(allowedBash, undefined);
+  assert.equal(planBash.input.command, "git diff --no-ext-diff --no-textconv HEAD");
+
   await shortcut?.handler(ctx);
   assert.equal(statuses.at(-1), "⚠ bypass-all");
   assert.deepEqual(activeTools, ["read", "bash", "edit", "write", "bg_status", "subagent_spawn"]);
   assert.match(notifications.at(-1) ?? "", /Bypass-all mode/);
+  assert.match(confirmPrompts.at(-1) ?? "", /bypass-all/);
 
   const bypassedEdit = await handlers.get("tool_call")?.(
     { type: "tool_call", toolCallId: "2", toolName: "edit", input: { path: "README.md" } },
@@ -331,6 +396,9 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
   );
   assert.equal(readResult, undefined);
 
+  // An unfocused terminal gets the desktop alert alongside the dialog.
+  assert.ok(terminalInputListener);
+  terminalInputListener?.("\x1b[O");
   const reviewedEdit = await handlers.get("tool_call")?.(
     { type: "tool_call", toolCallId: "4", toolName: "edit", input: { path: "README.md" } },
     ctx,
@@ -343,10 +411,20 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
   assert.ok(approvalWidgets.some((value) => Array.isArray(value)));
   assert.equal(approvalWidgets.at(-1), undefined);
 
+  // A focused terminal skips the desktop alert; the dialog is enough.
+  terminalInputListener?.("\x1b[I");
+  const focusedEdit = await handlers.get("tool_call")?.(
+    { type: "tool_call", toolCallId: "4b", toolName: "edit", input: { path: "README.md" } },
+    ctx,
+  );
+  assert.equal(focusedEdit.block, true);
+  assert.equal(desktopNotifications.length, 1);
+
+  // bypass-all is never restored from persisted history.
   const bypassEntry = entries.find((entry) => entry.data.mode === "bypass-all");
   branchEntries = [bypassEntry];
   await handlers.get("session_tree")?.({}, ctx);
-  assert.equal(statuses.at(-1), "⚠ bypass-all");
+  assert.equal(statuses.at(-1), "◆ auto");
   assert.deepEqual(activeTools, ["read", "bash", "edit", "write", "bg_status", "subagent_spawn"]);
 
   const planEntry = entries.find((entry) => entry.data.mode === "plan");
@@ -356,6 +434,14 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
 
   branchEntries = [[...entries].reverse().find((entry: any) => entry.data.mode === "auto")];
   await handlers.get("session_tree")?.({}, ctx);
+  assert.deepEqual(activeTools, ["read", "bash", "edit", "write", "bg_status", "subagent_spawn"]);
+
+  // Declining the bypass-all confirmation continues the cycle to auto.
+  await shortcut?.handler(ctx);
+  assert.equal(statuses.at(-1), "⏸ plan");
+  confirmResult = false;
+  await shortcut?.handler(ctx);
+  assert.equal(statuses.at(-1), "◆ auto");
   assert.deepEqual(activeTools, ["read", "bash", "edit", "write", "bg_status", "subagent_spawn"]);
 
   await shortcut?.handler(ctx);

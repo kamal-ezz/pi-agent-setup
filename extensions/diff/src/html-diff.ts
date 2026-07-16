@@ -1,12 +1,17 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { tmpdir, userInfo } from "node:os";
 import { basename, join } from "node:path";
 import { spawn } from "node:child_process";
-import type { ChangedFile } from "./changed-files-view.ts";
+import type { ChangedFile } from "./changed-files.ts";
 
 export interface DiffHtmlOptions {
   generatedAt?: Date;
   projectName: string;
+  /** Stable identity for the output file; defaults to projectName. */
+  projectKey?: string;
+  /** Human label for what is being compared, e.g. "Staged changes". */
+  scopeLabel?: string;
 }
 
 interface DiffRow {
@@ -168,6 +173,84 @@ function renderCode(row: DiffRow): string {
   );
 }
 
+interface SplitRow {
+  band?: DiffRow;
+  left?: DiffRow;
+  right?: DiffRow;
+}
+
+export function buildSplitRows(rows: readonly DiffRow[]): SplitRow[] {
+  const result: SplitRow[] = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]!;
+    if (row.kind === "hunk" || row.kind === "meta") {
+      result.push({ band: row });
+      continue;
+    }
+    if (row.kind === "context") {
+      result.push({ left: row, right: row });
+      continue;
+    }
+    // Pair a run of deletions with the run of additions that follows it,
+    // mirroring the inline-highlight pairing.
+    const deletions: DiffRow[] = [];
+    const additions: DiffRow[] = [];
+    while (rows[index]?.kind === "deletion") deletions.push(rows[index++]!);
+    while (rows[index]?.kind === "addition") additions.push(rows[index++]!);
+    index -= 1;
+    const pairs = Math.max(deletions.length, additions.length, 1);
+    for (let pair = 0; pair < pairs; pair += 1) {
+      result.push({ left: deletions[pair], right: additions[pair] });
+    }
+  }
+  return result;
+}
+
+/** Split cells drop the leading +/-/space marker; shift highlights to match. */
+function renderSplitCode(row: DiffRow): string {
+  const text = row.content.slice(1);
+  if (row.highlightStart === undefined || row.highlightEnd === undefined) {
+    return escapeHtml(text || " ");
+  }
+  const start = Math.max(0, row.highlightStart - 1);
+  const end = Math.max(start, row.highlightEnd - 1);
+  return (
+    escapeHtml(text.slice(0, start)) +
+    `<mark>${escapeHtml(text.slice(start, end)) || "&nbsp;"}</mark>` +
+    escapeHtml(text.slice(end))
+  );
+}
+
+function splitCellKind(row: DiffRow | undefined, changed: string): string {
+  if (!row) return "empty";
+  return row.kind === "context" ? "context" : changed;
+}
+
+function renderSplitTable(file: ChangedFile): string {
+  const rows = buildSplitRows(parseDiffRows(file.diff))
+    .map((row) => {
+      if (row.band) {
+        return `<tr class="split-row ${row.band.kind}">
+        <td class="split-band" colspan="4"><code>${renderCode(row.band)}</code></td>
+      </tr>`;
+      }
+      const leftKind = splitCellKind(row.left, "deletion");
+      const rightKind = splitCellKind(row.right, "addition");
+      return `<tr class="split-row">
+        <td class="line-number old ${leftKind}">${row.left?.oldLine ?? ""}</td>
+        <td class="code side ${leftKind}"><code>${row.left ? renderSplitCode(row.left) : " "}</code></td>
+        <td class="line-number new ${rightKind}">${row.right?.newLine ?? ""}</td>
+        <td class="code side ${rightKind}"><code>${row.right ? renderSplitCode(row.right) : " "}</code></td>
+      </tr>`;
+    })
+    .join("\n");
+  return `<table class="diff-table split" aria-label="Side-by-side diff for ${escapeHtml(file.path)}">
+      <colgroup><col class="num"><col><col class="num"><col></colgroup>
+      <thead><tr><th class="old-heading">Base</th><th class="code-heading">Before</th><th class="new-heading">Work</th><th class="code-heading">After</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
 function renderRows(file: ChangedFile): string {
   return parseDiffRows(file.diff)
     .map((row) => {
@@ -217,10 +300,11 @@ function renderFileSection(file: ChangedFile, index: number): string {
       <div class="change-rail" aria-hidden="true"><i style="width:${balance.additionPercent}%"></i><b></b></div>
     </header>
     <div class="diff-scroll">
-      <table class="diff-table" aria-label="Diff for ${escapeHtml(file.path)}">
+      <table class="diff-table unified" aria-label="Diff for ${escapeHtml(file.path)}">
         <thead><tr><th class="marker-heading"></th><th class="old-heading">Base</th><th class="new-heading">Work</th><th class="code-heading">Patch</th></tr></thead>
         <tbody>${renderRows(file)}</tbody>
       </table>
+      ${renderSplitTable(file)}
     </div>
   </section>`;
 }
@@ -230,6 +314,7 @@ export function renderDiffHtml(files: readonly ChangedFile[], options: DiffHtmlO
   const totalAdditions = files.reduce((sum, file) => sum + numericStat(file.additions), 0);
   const totalDeletions = files.reduce((sum, file) => sum + numericStat(file.deletions), 0);
   const projectName = escapeHtml(options.projectName);
+  const scopeLabel = escapeHtml(options.scopeLabel ?? "Working tree vs HEAD");
   const fileWord = files.length === 1 ? "file" : "files";
 
   return `<!doctype html>
@@ -416,7 +501,23 @@ export function renderDiffHtml(files: readonly ChangedFile[], options: DiffHtmlO
     .code mark { margin: 0 -1px; padding: 1px; border-radius: 3px; color: inherit; font-weight: 750; }
     .addition .code mark { background: color-mix(in srgb, var(--add) 27%, transparent); box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--add) 55%, transparent); }
     .deletion .code mark { background: color-mix(in srgb, var(--delete) 27%, transparent); box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--delete) 55%, transparent); }
-    body.hide-meta .diff-row.meta { display: none; }
+    .diff-table.split { display: none; }
+    body.split-view .diff-table.split { display: table; }
+    body.split-view .diff-table.unified { display: none; }
+    .diff-table.split col.num { width: 52px; }
+    .split-row { background: var(--surface); }
+    .split-row .code.side { overflow: hidden; padding: 0 14px; white-space: pre; }
+    .split-row .code.side code { display: block; min-width: 0; }
+    .split-row .code.deletion, .split-row .line-number.deletion { background: var(--delete-bg); }
+    .split-row .code.deletion { color: var(--delete); }
+    .split-row .code.addition, .split-row .line-number.addition { background: var(--add-bg); }
+    .split-row .code.addition { color: var(--add); }
+    .split-row .code.empty, .split-row .line-number.empty { background: var(--fainter); }
+    .split-row .code.deletion mark { background: color-mix(in srgb, var(--delete) 27%, transparent); box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--delete) 55%, transparent); }
+    .split-row .code.addition mark { background: color-mix(in srgb, var(--add) 27%, transparent); box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--add) 55%, transparent); }
+    .split-band { padding: 0 14px; color: var(--muted); font: inherit; }
+    .split-row.hunk .split-band { background: var(--hunk-bg); color: var(--hunk); font-weight: 700; }
+    body.hide-meta .diff-row.meta, body.hide-meta .split-row.meta { display: none; }
     body.wrap-lines .code { white-space: pre-wrap; overflow-wrap: anywhere; }
     body.wrap-lines .code code { min-width: 0; }
     body.dense .diff-table { font-size: 12px; line-height: 1.34; }
@@ -457,7 +558,7 @@ export function renderDiffHtml(files: readonly ChangedFile[], options: DiffHtmlO
   <div class="shell">
     <aside class="sidebar">
       <div class="identity">
-        <p class="eyebrow">Working tree / Review</p>
+        <p class="eyebrow">${scopeLabel}</p>
         <h1>${projectName}</h1>
         <p class="summary">${files.length} ${fileWord} · <strong>+${totalAdditions}</strong> · <em>−${totalDeletions}</em></p>
       </div>
@@ -467,12 +568,13 @@ export function renderDiffHtml(files: readonly ChangedFile[], options: DiffHtmlO
     </aside>
     <main class="main">
       <header class="hero">
-        <div class="hero-copy"><p class="eyebrow">Patch dossier · ${escapeHtml(generatedAt.toLocaleString())}</p><h2>Local changes,<br>made legible.</h2><p>A self-contained review of the working tree. File rails show the balance of additions and deletions; use the sidebar to move through the patch.</p></div>
+        <div class="hero-copy"><p class="eyebrow">${scopeLabel} · ${escapeHtml(generatedAt.toLocaleString())}</p><h2>Local changes,<br>made legible.</h2><p>A self-contained review of ${scopeLabel.toLowerCase()}. File rails show the balance of additions and deletions; use the sidebar to move through the patch.</p></div>
         <div class="hero-metrics" aria-label="Change summary"><div class="metric"><span>Files</span><b>${files.length}</b></div><div class="metric add"><span>Added</span><b>+${totalAdditions}</b></div><div class="metric delete"><span>Removed</span><b>−${totalDeletions}</b></div></div>
       </header>
       <div class="review-toolbar" aria-label="Diff view controls">
         <div class="review-position"><span>Reviewing</span><b id="current-file">${escapeHtml(files[0]?.path ?? "No file")}</b></div>
         <div class="view-controls">
+          <button type="button" data-view="split" aria-pressed="false">Split <kbd>S</kbd></button>
           <button type="button" data-view="metadata" aria-pressed="false">Git headers <kbd>M</kbd></button>
           <button type="button" data-view="wrap" aria-pressed="false">Wrap lines <kbd>W</kbd></button>
           <button type="button" data-view="density" aria-pressed="false">Compact <kbd>D</kbd></button>
@@ -535,6 +637,7 @@ export function renderDiffHtml(files: readonly ChangedFile[], options: DiffHtmlO
       const setView = (view, enabled) => {
         const button = viewButtons[view];
         if (!button) return;
+        if (view === 'split') document.body.classList.toggle('split-view', enabled);
         if (view === 'metadata') document.body.classList.toggle('hide-meta', !enabled);
         if (view === 'wrap') document.body.classList.toggle('wrap-lines', enabled);
         if (view === 'density') document.body.classList.toggle('dense', enabled);
@@ -566,6 +669,7 @@ export function renderDiffHtml(files: readonly ChangedFile[], options: DiffHtmlO
         else if (event.key.toLowerCase() === 'j' && document.activeElement !== search) go(1);
         else if (event.key.toLowerCase() === 'k' && document.activeElement !== search) go(-1);
         else if (event.key.toLowerCase() === 't' && document.activeElement !== search) document.querySelector('.theme-toggle').click();
+        else if (event.key.toLowerCase() === 's' && document.activeElement !== search) viewButtons.split.click();
         else if (event.key.toLowerCase() === 'm' && document.activeElement !== search) viewButtons.metadata.click();
         else if (event.key.toLowerCase() === 'w' && document.activeElement !== search) viewButtons.wrap.click();
         else if (event.key.toLowerCase() === 'd' && document.activeElement !== search) viewButtons.density.click();
@@ -597,15 +701,19 @@ export async function writeDiffHtml(
   files: readonly ChangedFile[],
   options: DiffHtmlOptions,
 ): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), "pi-diff-"));
-  const filePath = join(directory, `${basename(options.projectName) || "changes"}.html`);
-  try {
-    await writeFile(filePath, renderDiffHtml(files, options), "utf8");
-    return filePath;
-  } catch (error) {
-    await rm(directory, { force: true, recursive: true }).catch(() => {});
-    throw error;
-  }
+  // A stable per-project path lets a re-run overwrite the previous review, so
+  // refreshing the already-open browser tab shows the new diff.
+  const directory = join(tmpdir(), `pi-diff-${userInfo().username}`);
+  await mkdir(directory, { mode: 0o700, recursive: true });
+  const slug =
+    (basename(options.projectName) || "changes").replace(/[^\w.-]+/g, "-");
+  const key = createHash("sha256")
+    .update(options.projectKey ?? options.projectName)
+    .digest("hex")
+    .slice(0, 8);
+  const filePath = join(directory, `${slug}-${key}.html`);
+  await writeFile(filePath, renderDiffHtml(files, options), "utf8");
+  return filePath;
 }
 
 function launch(command: string, args: string[]): Promise<boolean> {
