@@ -15,6 +15,7 @@ A portable snapshot of the global Pi configuration from `~/.pi/agent`.
 - Unified MCP runtime with live inventory (`/mcp`), guided configuration (`/mcp-setup`), stdio and Streamable HTTP transports, and Context7 enabled
 - Persistent, branch-aware goals with automatic continuation (`/goal`)
 - Background terminals for servers, watchers, and long-running commands (`/ps`)
+- Out-of-band side questions (`/btw <question>`) answered by the active model in parallel without steering the primary run. In the interactive TUI, `/btw` sends the active, compaction-aware conversation snapshot to the same model provider and stores the answer as a local TUI-only session entry that is excluded from primary model context
 - Self-contained HTML changes review with file filtering, line numbers, theme switching, keyboard navigation, and addition/deletion rails (`/diff`)
 - GPT-5.6 Luna, Terra, and Sol subagents on Pi or Codex with automatic model routing, background execution, and takeover UI (`/subagents`)
 - Frontend design, background terminal, Mermaid diagram, and subagent skills
@@ -62,6 +63,7 @@ git diff
 ├── extensions/
 │   ├── auto-plan/
 │   ├── background-terminals/
+│   ├── btw/
 │   ├── codex-usage.ts
 │   ├── context7-mcp/
 │   ├── diff/

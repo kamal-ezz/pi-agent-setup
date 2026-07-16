@@ -30,6 +30,7 @@ managed_files=(
 managed_directories=(
   extensions/auto-plan
   extensions/background-terminals
+  extensions/btw
   extensions/context7-mcp
   extensions/diff
   extensions/goal
