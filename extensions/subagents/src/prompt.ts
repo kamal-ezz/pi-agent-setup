@@ -2,16 +2,17 @@
 
 /** Describes subagent_spawn, including harnesses and the fixed concurrency cap. */
 export const SUBAGENT_SPAWN_TOOL_DESCRIPTION =
-  "Spawn a background subagent: a fully autonomous, headless agent with its own context window. You choose the harness it runs on: pi (in-process pi session, inherits this environment's tools and config), claude (Claude Code), or codex (Codex CLI). Fire-and-forget: this returns immediately with an id. The subagent's final output is queued back to you as a message when it settles, or collect it explicitly with subagent_wait. Children cannot orchestrate more agents/workflows or ask the user, and cannot see this conversation, so the prompt must be self-contained. Max 4 subagents can be running at once across all harnesses.";
+  "Spawn a silent background GPT subagent with its own context window. Available harnesses are pi (in-process) and codex (Codex CLI). Only GPT-5.6 Luna, Terra, and Sol are allowed; when model is omitted it is routed automatically by task complexity. Fire-and-forget returns an id immediately. Final output is queued back into the parent conversation or can be collected with subagent_wait. Children cannot send desktop notifications, orchestrate more agents/workflows, ask the user, or see this conversation, so prompts must be self-contained. Max 4 subagents can run at once.";
 
 /** Adds background subagent delegation to the parent model's available-tools prompt. */
 export const SUBAGENT_SPAWN_PROMPT_SNIPPET =
-  "Spawn a background subagent on a chosen harness (pi, Claude Code, or Codex; own context, normal tools) for a self-contained task";
+  "Spawn a silent GPT-5.6 subagent using Pi or Codex for a self-contained background task";
 
 /** Guides the parent model to delegate standalone tasks and avoid unnecessary blocking waits. */
 export const SUBAGENT_SPAWN_PROMPT_GUIDELINES = [
   "Use subagent_spawn to delegate self-contained tasks that can run in the background; give it a complete, standalone prompt.",
-  "Pick the subagent harness deliberately: pi unless you have a reason to prefer Claude Code or Codex (e.g. the user asked for one, or the task suits that harness).",
+  "Use only the pi or codex subagent harness. Prefer pi unless the user explicitly requests Codex CLI behavior.",
+  "Let subagent_spawn route the model when possible: Luna for simple/repetitive reconnaissance, Terra for standard coding/research/review, and Sol for complex architecture, debugging, security, or high-stakes work.",
   "After subagent_spawn, keep working; results arrive automatically. Only call subagent_wait when you cannot proceed without the result.",
 ];
 
@@ -21,12 +22,12 @@ export const SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS = {
     "Task prompt for the subagent. Must be self-contained: include all needed context, file paths, and what to report back.",
   name: "Short human-readable name for this subagent, shown in listings and the UI",
   harness:
-    'Harness to run the subagent on: "pi" (in-process pi session; inherits this environment), "claude" (Claude Code), or "codex" (Codex CLI). Choose deliberately per task.',
+    'GPT-only harness: "pi" (recommended in-process session) or "codex" (Codex CLI). Claude is disabled.',
   workingDir: "Working directory (default: current working directory)",
   model:
-    'Model hint, interpreted by the chosen harness (pi: "provider/model-id" or model id; claude: model alias like "sonnet"/"opus"; codex: model slug). Omit for the harness default (pi inherits the current model).',
+    'Optional GPT-5.6 model override: gpt-5.6-luna, gpt-5.6-terra, or gpt-5.6-sol. Omit for automatic routing by task complexity.',
   reasoningEffort:
-    "Reasoning effort on a shared scale; the harness maps it to its nearest native equivalent (pi thinking level, codex reasoning effort, claude thinking budget). Omit for the harness default (pi inherits the current level).",
+    "Reasoning effort on a shared scale; Pi and Codex map it to their nearest supported level. Defaults to medium.",
 };
 
 /** Builds the subagent_spawn result that tells the parent model how to continue or inspect the child. */

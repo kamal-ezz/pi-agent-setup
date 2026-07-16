@@ -1,15 +1,11 @@
 {
-  "name": "pi-unified-mcp",
-  "version": "2.0.0",
+  "name": "pi-persistent-goal",
   "private": true,
   "type": "module",
   "scripts": {
     "link-host-deps": "node link-host-deps.mjs",
     "check": "npm run link-host-deps --silent && tsc --noEmit -p .",
-    "test": "node --test --experimental-strip-types inventory.test.ts"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0"
+    "test": "npm run link-host-deps --silent && node --test --experimental-strip-types *.test.ts"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

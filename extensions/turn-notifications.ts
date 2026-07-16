@@ -91,7 +91,10 @@ function responseOverview(ctx: ExtensionContext): string {
 export default function (pi: ExtensionAPI) {
 	let enabled = true;
 	let suppressNextSettledNotification = false;
-	let terminalFocused = true;
+	// Some terminal tabs (including Ghostty tabs) do not reliably send an
+	// initial or tab-switch focus sequence. Fail open so a missed sequence does
+	// not silently lose a completion alert; explicit focus-in still suppresses it.
+	let terminalFocused = false;
 	let focusInput = "";
 	let focusListener: ((data: string | Buffer) => void) | undefined;
 
@@ -104,7 +107,6 @@ export default function (pi: ExtensionAPI) {
 
 	function enableFocusTracking(ctx: ExtensionContext): void {
 		if (ctx.mode !== "tui" || focusListener) return;
-		terminalFocused = true;
 		focusInput = "";
 		focusListener = trackTerminalFocus;
 		process.stdin.on("data", focusListener);
@@ -176,6 +178,10 @@ export default function (pi: ExtensionAPI) {
 			suppressNextSettledNotification = false;
 			return;
 		}
+		// Another extension (for example persistent /goal) may start the next
+		// run from an earlier agent_settled handler. Alert only at a true idle
+		// boundary, not between automatic continuation runs.
+		if (!ctx.isIdle()) return;
 		if (!enabled) return;
 		try {
 			await notify(ctx);

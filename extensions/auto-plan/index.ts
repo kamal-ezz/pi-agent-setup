@@ -136,13 +136,14 @@ export function addInputArrow(
 export function createInterruptHandler(
   now: () => number = Date.now,
   restoreDraft: () => string | undefined = () => undefined,
+  shutdown: (ctx: ExtensionContext) => void = (ctx) => ctx.shutdown(),
 ) {
   let lastPressAt = Number.NEGATIVE_INFINITY;
   return (ctx: ExtensionContext): void => {
     const pressedAt = now();
     if (pressedAt - lastPressAt <= DOUBLE_INTERRUPT_WINDOW_MS) {
       lastPressAt = Number.NEGATIVE_INFINITY;
-      ctx.shutdown();
+      shutdown(ctx);
       return;
     }
 
@@ -518,7 +519,14 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
     handler: async (ctx) => toggleMode(ctx),
   });
 
-  const interrupt = createInterruptHandler(Date.now, () => submittedPrompt);
+  const interrupt = createInterruptHandler(
+    Date.now,
+    () => submittedPrompt,
+    // ExtensionContext.shutdown() is checked only after agent_settled, so it
+    // cannot exit an idle session. Route the second press through Pi's graceful
+    // SIGTERM handler instead; it exits both idle and active sessions cleanly.
+    () => process.kill(process.pid, "SIGTERM"),
+  );
   pi.registerShortcut(Key.ctrl("c"), {
     description: "Interrupt turn; press twice to exit Pi",
     handler: interrupt,

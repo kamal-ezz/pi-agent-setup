@@ -1,6 +1,6 @@
 /**
- * Subagents — spawn background subagents on one of three backends
- * (pi, Claude Code, Codex) unified behind a single Effect service interface.
+ * Subagents — spawn silent GPT-only background subagents on Pi or Codex,
+ * unified behind a single Effect service interface.
  *
  * Tools (for the parent LLM):
  * - subagent_spawn: fire-and-forget spawn (prompt, title, agent, working_dir,
@@ -15,9 +15,8 @@
  *
  * Architecture: Effect v4 generators throughout (backends -> manager ->
  * runtime); this file is the async boundary where tool handlers run effects
- * against one shared ManagedRuntime. All three backends are real: pi runs
- * in-process SDK sessions, claude drives the Claude Agent SDK, codex speaks
- * JSON-RPC to a scoped `codex app-server` process.
+ * against one shared ManagedRuntime. The public/runtime policy wires Pi and
+ * Codex only and routes every task to GPT-5.6 Luna, Terra, or Sol.
  */
 
 import * as fs from "node:fs";
@@ -40,7 +39,6 @@ import {
 import { Markdown, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
-  BACKEND_NAMES,
   formatElapsed,
   latestText,
   REASONING_EFFORTS,
@@ -66,6 +64,13 @@ import {
   SUBAGENT_WAIT_PARAMETER_DESCRIPTIONS,
   SUBAGENT_WAIT_TOOL_DESCRIPTION,
 } from "./src/prompt.ts";
+import {
+  GPT_SUBAGENT_MODELS,
+  PUBLIC_SUBAGENT_HARNESSES,
+  modelHintForHarness,
+  normalizeSubagentModel,
+  routeSubagentModel,
+} from "./src/policy.ts";
 import { createDeferredResultDelivery } from "./src/result-delivery.ts";
 import {
   createSubagentRuntime,
@@ -236,7 +241,7 @@ export default function (pi: ExtensionAPI) {
       name: Type.String({
         description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.name,
       }),
-      harness: StringEnum(BACKEND_NAMES, {
+      harness: StringEnum(PUBLIC_SUBAGENT_HARNESSES, {
         description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.harness,
       }),
       working_dir: Type.Optional(
@@ -245,7 +250,7 @@ export default function (pi: ExtensionAPI) {
         }),
       ),
       model: Type.Optional(
-        Type.String({
+        StringEnum(GPT_SUBAGENT_MODELS, {
           description: SUBAGENT_SPAWN_PARAMETER_DESCRIPTIONS.model,
         }),
       ),
@@ -265,14 +270,18 @@ export default function (pi: ExtensionAPI) {
       }
 
       const title = params.name.trim().slice(0, 160) || "subagent";
+      const routedModel =
+        normalizeSubagentModel(params.model) ??
+        routeSubagentModel(`${title}\n${params.prompt}`);
+      const model = modelHintForHarness(harness, routedModel);
       const snap = await runTool(
         getRuntime(),
         manager.spawn(harness, {
           prompt: params.prompt,
           title,
           cwd,
-          model: params.model,
-          reasoningEffort: params.reasoning_effort,
+          model,
+          reasoningEffort: params.reasoning_effort ?? "medium",
           parent: {
             parentCwd: ctx.cwd,
             projectTrusted: resolveChildProjectTrust({

@@ -5,60 +5,34 @@ description: invoke this skill when the user asks you to use subagents
 
 # Subagents
 
-Each subagent is headless, has its own context window, cannot see the parent conversation, cannot ask the user, and cannot spawn subagents or workflows. Give every child a self-contained prompt with paths, constraints, and the expected report.
+Each subagent is silent and headless, has its own context window, cannot see the parent conversation, cannot ask the user, cannot spawn more agents/workflows, and must not emit desktop or audio notifications. Give every child a self-contained prompt with paths, constraints, and the expected report.
 
-## Pi Harness
+## Allowed harnesses
 
-**Harness:** `pi`
-**Prompt nicknames:** “pi”, “pi agent”, “pi subagent”
-**Best default:** Use when the user does not request another harness. It inherits the parent model and thinking level when `model` or `reasoning_effort` is omitted.
+Use GPT-backed harnesses only:
 
-Do not use models from the Anthropic provider even if one appears in the model list.
+- `pi` — preferred; in-process Pi session with normal inherited tools/config.
+- `codex` — use only when the user explicitly needs Codex CLI behavior.
 
-Pi can use any model shown by `pi --list-models`. Prefer `provider/model-id`; a bare model id only works when unambiguous. Common picks in this environment:
+Never use the Claude harness or any Anthropic model.
 
-| Model                            | Recommended effort |
-| -------------------------------- | ------------------ |
-| inherited parent model (default) | inherited          |
-| `openai-codex/gpt-5.6-sol`       | `high`             |
-| `openai-codex/gpt-5.6-terra`     | `high`             |
-| `opencode/claude-fable-5`        | `medium`           |
+## Model routing
 
-**Thinking budgets:** `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. These map directly to pi thinking levels.
+Only these models are allowed. Omit `model` to let the extension route automatically, or choose according to this table:
 
-## Claude Code Harness
+| Model | Use for | Recommended effort |
+| --- | --- | --- |
+| `gpt-5.6-luna` | Simple lookups, file discovery, summaries, extraction, repetitive/high-volume checks | `medium` |
+| `gpt-5.6-terra` | Standard coding, tests, repository research, ordinary review and implementation | `medium` |
+| `gpt-5.6-sol` | Complex architecture, difficult debugging, security, migrations, concurrency, high-stakes review | `medium` |
 
-**Harness:** `claude`
-**Prompt nicknames:** “claude”, “Claude Code”, “claude agent”, “claude subagent”, "cc"
-**Best default:** use the latest fable model on high reasoning. Do not default to anything else, if the user does not specify, use fable.
+Sol is the frontier tier, Terra balances intelligence and cost, and Luna is the cost-sensitive high-volume tier. Complex or high-risk signals take priority over words such as “quick.”
 
-| Model hint | Model               | Recommended effort |
-| ---------- | ------------------- | ------------------ |
-| `fable`    | latest Claude Fable | `high`             |
+For the Pi harness, model ids resolve to `openai-codex/gpt-5.6-*`. For Codex, use the bare `gpt-5.6-*` slug. The extension normalizes this automatically.
 
-**Thinking budgets:** `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. The extension maps these to Claude thinking-token budgets: 0, 1,024, 4,096, 10,000, 16,000, 32,000, and 63,999 tokens respectively.
+## Spawn and manage
 
-Requires Claude Code to be installed and authenticated.
-
-## Codex Harness
-
-**Harness:** `codex`
-**Prompt nicknames:** “codex”, “Codex CLI”, “codex agent”, “codex subagent”
-**Best default:** `gpt-5.6-sol` with `high` effort for coding work. Do not use anything other than sol unless the user specifically asks for it.
-
-| Model           | Recommended effort |
-| --------------- | ------------------ |
-| `gpt-5.6-sol`   | `high`             |
-| `gpt-5.6-terra` | `high`             |
-| `gpt-5.6-luna`  | `high`             |
-
-**Thinking budgets accepted by the extension:** `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Codex maps these to the nearest effort supported by the selected model; `off`/`minimal` become `minimal`, while `max` becomes the highest extension-supported Codex effort.
-
-Requires the Codex CLI to be installed and authenticated.
-
-## Spawn and Manage
-
-Call `subagent_spawn` with a complete `prompt`, short `name`, chosen `harness`, and optional `working_dir`, `model`, and `reasoning_effort`. At most four subagents run concurrently.
+Call `subagent_spawn` with a complete `prompt`, short `name`, `harness: "pi"` by default, and optional `working_dir`, `model`, and `reasoning_effort`. At most four subagents run concurrently.
 
 - `subagent_check({ id })`: peek without blocking.
 - `subagent_list()`: list all runs.
@@ -66,4 +40,4 @@ Call `subagent_spawn` with a complete `prompt`, short `name`, chosen `harness`, 
 - `subagent_cancel({ ids })`: stop runs while preserving partial transcripts.
 - `/subagents`: inspect or take over a run interactively.
 
-Results return automatically. After spawning, continue useful parent work instead of immediately waiting.
+Results return silently into the parent conversation. After spawning, continue useful parent work instead of immediately waiting.

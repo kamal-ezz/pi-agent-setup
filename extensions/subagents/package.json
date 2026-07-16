@@ -3,10 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "tsc --noEmit -p .",
+    "link-host-deps": "node link-host-deps.mjs",
+    "check": "npm run link-host-deps --silent && tsc --noEmit -p .",
     "prepare": "effect-tsgo patch",
-    "test": "node --test --experimental-strip-types manager.test.ts result-delivery.test.ts context-usage.test.ts takeover.test.ts",
-    "test:live": "node --test --experimental-strip-types claude.test.ts codex.test.ts"
+    "test": "npm run link-host-deps --silent && node --test --experimental-strip-types manager.test.ts result-delivery.test.ts context-usage.test.ts takeover.test.ts policy.test.ts",
+    "test:live": "npm run link-host-deps --silent && node --test --experimental-strip-types codex.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.207",

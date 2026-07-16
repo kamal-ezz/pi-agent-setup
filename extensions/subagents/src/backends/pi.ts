@@ -15,6 +15,7 @@ import type { AssistantMessage, Message, Model } from "@earendil-works/pi-ai";
 import type {
   AgentSession,
   AgentSessionEvent,
+  LoadExtensionsResult,
   ModelRegistry,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
@@ -35,9 +36,22 @@ import type {
   TranscriptPart,
 } from "../domain.ts";
 import { SendError, SpawnError } from "../domain.ts";
+import { childExtensionMayLoad } from "../policy.ts";
 
 const CHILD_SHUTDOWN_TIMEOUT_MS = 5_000;
 const CHILD_TOOL_CALL_TIMEOUT_MS = 3 * 60 * 1_000;
+
+/** Headless children must never emit desktop/audio completion notifications. */
+export function withoutChildNotificationExtensions(
+  base: LoadExtensionsResult,
+): LoadExtensionsResult {
+  return {
+    ...base,
+    extensions: base.extensions.filter((extension) =>
+      childExtensionMayLoad(extension.resolvedPath),
+    ),
+  };
+}
 
 /** Tools that headless children must not receive. Everything else stays enabled. */
 const CHILD_EXCLUDED_TOOL_NAMES = [
@@ -101,7 +115,12 @@ async function createChildResources(cwd: string, projectTrusted: boolean) {
   const settingsManager = SettingsManager.create(cwd, agentDir, {
     projectTrusted,
   });
-  const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+  const loader = new DefaultResourceLoader({
+    cwd,
+    agentDir,
+    settingsManager,
+    extensionsOverride: withoutChildNotificationExtensions,
+  });
   await loader.reload();
   return { loader, settingsManager };
 }

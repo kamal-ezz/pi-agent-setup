@@ -4,7 +4,7 @@ A portable snapshot of the global Pi configuration from `~/.pi/agent`.
 
 ## Included
 
-- Pi defaults: GitHub Dark Default theme, OpenAI Codex, `gpt-5.6-sol`, and medium reasoning effort
+- Pi defaults: GitHub Dark Default theme, OpenAI Codex, `gpt-5.6-sol`, and high reasoning effort
 - Main-agent Auto mode by default: routine actions run automatically while destructive, security-critical, or `AGENTS.md`-violating actions require approval with a persistent in-harness warning and desktop notification; Shift+Tab cycles green Auto, yellow read-only Plan, and red bypass-all modes
 - A mode-colored arrow prefixes the input bar; the terminal tab shows an animated spinner during active turns. Agent responses support natural, sparing Unicode emoji. `/clear` starts a fresh empty session, while Ctrl+C or Cmd+C restores an interrupted prompt without a notification or abort popup, and a second press exits Pi
 - Clipboard images appear as compact numbered placeholders such as `[Image #1]` instead of temporary file paths
@@ -12,17 +12,18 @@ A portable snapshot of the global Pi configuration from `~/.pi/agent`.
 - Reasoning effort selector (`/effort`)
 - Compact footer with project, branch, model, reasoning level, context gauge, and active mode
 - A short completion chime on turn completion only when Pi's terminal tab is unfocused; desktop notifications remain the fallback outside the TUI (`/notifications`)
-- MCP manager (`/mcp`) with Context7 enabled
+- Unified MCP runtime with live inventory (`/mcp`), guided configuration (`/mcp-setup`), stdio and Streamable HTTP transports, and Context7 enabled
+- Persistent, branch-aware goals with automatic continuation (`/goal`)
 - Background terminals for servers, watchers, and long-running commands (`/ps`)
 - Interactive local changes browser (`/diff`)
-- Pi, Claude Code, and Codex subagents with background execution and takeover UI (`/subagents`)
+- GPT-5.6 Luna, Terra, and Sol subagents on Pi or Codex with automatic model routing, background execution, and takeover UI (`/subagents`)
 - Frontend design, background terminal, and subagent skills
 
 ## Install
 
 Requirements: Pi, Node.js 20 or newer, npm, and Git. Desktop-notification fallback additionally requires `notify-send`; chime playback uses `canberra-gtk-play` when available.
 
-Pi-backed subagents work with the installed Pi models. Claude Code and Codex subagents additionally require their respective CLIs to be installed and authenticated.
+Pi-backed subagents work with the installed Pi models. Codex subagents additionally require the Codex CLI to be installed and authenticated.
 
 ```bash
 git clone git@github.com:kamal-ezz/pi-agent-setup.git
@@ -65,6 +66,7 @@ git diff
 │   ├── context7-mcp/
 │   ├── diff/
 │   ├── effort.ts
+│   ├── goal/
 │   ├── hide-token-cost.ts
 │   ├── subagents/
 │   └── turn-notifications.ts

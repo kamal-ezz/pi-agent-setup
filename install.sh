@@ -16,9 +16,6 @@ managed_files=(
   extensions/emoji-responses.ts
   extensions/hide-token-cost.ts
   extensions/turn-notifications.ts
-  extensions/context7-mcp/index.ts
-  extensions/context7-mcp/package.json
-  extensions/context7-mcp/package-lock.json
   skills/frontend-design/SKILL.md
   skills/frontend-design/LICENSE.txt
   tsconfig.json
@@ -27,7 +24,9 @@ managed_files=(
 managed_directories=(
   extensions/auto-plan
   extensions/background-terminals
+  extensions/context7-mcp
   extensions/diff
+  extensions/goal
   extensions/subagents
   skills/background-terminals
   skills/subagents

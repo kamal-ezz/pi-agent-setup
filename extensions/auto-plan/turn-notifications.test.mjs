@@ -28,8 +28,9 @@ test("a settled TUI turn plays a completion chime only after its terminal tab lo
     return true;
   };
   try {
-    const ctx = { mode: "tui" };
+    const ctx = { mode: "tui", isIdle: () => true };
     await handlers.get("session_start")({}, ctx);
+    process.stdin.emit("data", "\x1b[I");
     await handlers.get("agent_settled")({}, ctx);
     process.stdin.emit("data", "\x1b[O");
     await handlers.get("agent_settled")({}, ctx);
