@@ -6,8 +6,6 @@
  * stderr separately, and settles exactly once into a final state.
  */
 
-import { Data } from "effect";
-
 export type TerminalStatus = "running" | "done" | "failed" | "killed";
 // "done"   = exited with code 0
 // "failed" = exited non-zero, or a spawn-level runtime error after start
@@ -70,18 +68,26 @@ export function formatExit(snap: TerminalSnapshot) {
 
 // --- Errors -------------------------------------------------------------------
 
-export class SpawnError extends Data.TaggedError("SpawnError")<{
-  readonly message: string;
-}> {}
+export class SpawnError extends Error {
+  readonly _tag = "SpawnError";
+  constructor({ message }: { readonly message: string }) {
+    super(message);
+    this.name = "SpawnError";
+  }
+}
 
-export class ConcurrencyLimitError extends Data.TaggedError(
-  "ConcurrencyLimitError",
-)<{
-  readonly message: string;
-}> {}
+export class ConcurrencyLimitError extends Error {
+  readonly _tag = "ConcurrencyLimitError";
+  constructor({ message }: { readonly message: string }) {
+    super(message);
+    this.name = "ConcurrencyLimitError";
+  }
+}
 
-export class UnknownTerminalError extends Data.TaggedError(
-  "UnknownTerminalError",
-)<{
-  readonly message: string;
-}> {}
+export class UnknownTerminalError extends Error {
+  readonly _tag = "UnknownTerminalError";
+  constructor({ message }: { readonly message: string }) {
+    super(message);
+    this.name = "UnknownTerminalError";
+  }
+}

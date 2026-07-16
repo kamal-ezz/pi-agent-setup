@@ -12,14 +12,15 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { Cause, Scope } from "effect";
-import { Effect, Queue, Stream } from "effect";
-import type { SubagentBackend, SubagentSession } from "../backend.ts";
+import {
+  createEventChannel,
+  type SubagentBackend,
+  type SubagentSession,
+} from "../backend.ts";
 import type {
   ReasoningEffort,
   RunOutcome,
   SpawnTask,
-  SubagentEvent,
   SubagentMeta,
   TranscriptPart,
 } from "../domain.ts";
@@ -302,40 +303,36 @@ function toolFailed(item: JsonRecord) {
 
 // --- The session -------------------------------------------------------------
 
-const makeCodexSession = (
-  task: SpawnTask,
-): Effect.Effect<SubagentSession, SpawnError, Scope.Scope> =>
-  Effect.gen(function* () {
+async function makeCodexSession(task: SpawnTask): Promise<SubagentSession> {
     if (!task.parent.projectTrusted) {
-      return yield* new SpawnError({
+      throw new SpawnError({
         message: "Codex subagents require a trusted working directory.",
       });
     }
     const binary = resolveCodexBinary();
     if (!binary) {
-      return yield* new SpawnError({
+      throw new SpawnError({
         message: "codex executable was not found on PATH.",
       });
     }
 
-    const events = yield* Queue.make<SubagentEvent, Cause.Done>();
-    const emit = (event: SubagentEvent) => {
-      Queue.offerUnsafe(events, event);
-    };
+    const channel = createEventChannel();
+    const emit = channel.emit;
 
-    const child = yield* Effect.try({
-      try: () =>
-        spawn(binary, ["app-server", "--stdio"], {
-          cwd: task.cwd,
-          env: process.env,
-          stdio: ["pipe", "pipe", "pipe"],
-          // Own process group on POSIX so teardown can signal the whole
-          // tree: a wedged app-server must not orphan a still-running
-          // shell command it spawned.
-          detached: process.platform !== "win32",
-        }),
-      catch: (error) => new SpawnError({ message: boundedError(error) }),
-    });
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawn(binary, ["app-server", "--stdio"], {
+        cwd: task.cwd,
+        env: process.env,
+        stdio: ["pipe", "pipe", "pipe"],
+        // Own process group on POSIX so teardown can signal the whole
+        // tree: a wedged app-server must not orphan a still-running
+        // shell command it spawned.
+        detached: process.platform !== "win32",
+      }) as ChildProcessWithoutNullStreams;
+    } catch (error) {
+      throw new SpawnError({ message: boundedError(error) });
+    }
 
     const state = {
       closed: false,
@@ -823,7 +820,7 @@ const makeCodexSession = (
           partialText: state.finalText || state.lastAssistantText || undefined,
         });
       }
-      Queue.endUnsafe(events);
+      channel.end();
     };
 
     let stdoutBuffer = "";
@@ -859,8 +856,9 @@ const makeCodexSession = (
       );
     });
 
-    yield* Effect.addFinalizer(() =>
-      Effect.promise(async () => {
+    let closing: Promise<void> | undefined;
+    const close = () =>
+      (closing ??= (async () => {
         if (state.closing) return;
         state.closing = true;
         if (state.interruptTimer) clearTimeout(state.interruptTimer);
@@ -876,39 +874,41 @@ const makeCodexSession = (
         state.closed = true;
         rejectPending("Codex session closed.");
         await terminateChild(child, () => state.exited);
-        Queue.endUnsafe(events);
-      }),
-    );
+        channel.end();
+      })());
 
-    const threadResult = yield* Effect.tryPromise({
-      try: async () => {
-        await request("initialize", {
-          clientInfo: {
-            name: "pi-subagents",
-            title: "pi subagent",
-            version: "2.0.0",
-          },
-          capabilities: { experimentalApi: true },
-        });
-        writeMessage({ method: "initialized" });
-        // Headless children cannot answer approval prompts. The caller
-        // already chose to launch an autonomous subagent, so give the thread
-        // full workspace access without interactive approval requests.
-        return request("thread/start", {
-          cwd: task.cwd,
-          approvalPolicy: "never",
-          sandbox: "danger-full-access",
-          ephemeral: false,
-          ...(task.model ? { model: task.model } : {}),
-        });
-      },
-      catch: (error) => new SpawnError({ message: boundedError(error) }),
-    });
+    let threadResult: JsonRecord;
+    try {
+      await request("initialize", {
+        clientInfo: {
+          name: "pi-subagents",
+          title: "pi subagent",
+          version: "2.0.0",
+        },
+        capabilities: { experimentalApi: true },
+      });
+      writeMessage({ method: "initialized" });
+      // Headless children cannot answer approval prompts. The caller
+      // already chose to launch an autonomous subagent, so give the thread
+      // full workspace access without interactive approval requests.
+      threadResult = await request("thread/start", {
+        cwd: task.cwd,
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+        ephemeral: false,
+        ...(task.model ? { model: task.model } : {}),
+      });
+    } catch (error) {
+      // A failed handshake must not leak the app-server process.
+      await close();
+      throw new SpawnError({ message: boundedError(error) });
+    }
 
     const thread = record(threadResult.thread);
     const nativeSessionId = stringValue(thread?.id);
     if (!nativeSessionId) {
-      return yield* new SpawnError({
+      await close();
+      throw new SpawnError({
         message: "Codex thread/start returned no thread id.",
       });
     }
@@ -922,9 +922,11 @@ const makeCodexSession = (
       // Optional capability probe: never let a slow/unsupported model/list
       // hold up the spawn (and its concurrency reservation) for the full
       // request timeout; the unclamped preferred effort is a fine fallback.
-      const modelList = yield* Effect.tryPromise(() =>
-        request("model/list", { includeHidden: true }, MODEL_LIST_TIMEOUT_MS),
-      ).pipe(Effect.orElseSucceed(() => undefined));
+      const modelList = await request(
+        "model/list",
+        { includeHidden: true },
+        MODEL_LIST_TIMEOUT_MS,
+      ).catch(() => undefined);
       state.effort = supportedCodexEffort(
         task.reasoningEffort,
         state.meta.modelLabel,
@@ -935,21 +937,23 @@ const makeCodexSession = (
     startRun(task.prompt);
 
     return {
-      meta: Effect.sync(() => state.meta),
-      events: Stream.fromQueue(events),
-      send: (text) =>
-        Effect.suspend((): Effect.Effect<void, SendError> => {
-          if (state.closed) {
-            return new SendError({ message: "Subagent session is closed." });
-          }
-          if (state.activeRun) {
-            state.pendingPrompts.push(text);
-            emit({ _tag: "QueueChanged", queued: queuedView() });
-            return Effect.void;
-          }
-          return Effect.sync(() => startRun(text));
-        }),
-      interrupt: Effect.promise(async () => {
+      meta: () => state.meta,
+      attach: channel.attach,
+      send: (text) => {
+        if (state.closed) {
+          return Promise.reject(
+            new SendError({ message: "Subagent session is closed." }),
+          );
+        }
+        if (state.activeRun) {
+          state.pendingPrompts.push(text);
+          emit({ _tag: "QueueChanged", queued: queuedView() });
+          return Promise.resolve();
+        }
+        startRun(text);
+        return Promise.resolve();
+      },
+      interrupt: async () => {
         if (state.closed || !state.activeRun) return;
         const serial = state.runSerial;
         state.pendingPrompts = [];
@@ -972,9 +976,10 @@ const makeCodexSession = (
             void terminateChild(child, () => state.exited);
           }
         }, INTERRUPT_FALLBACK_MS);
-      }),
+      },
+      close,
     } satisfies SubagentSession;
-  });
+}
 
 /** Signal the whole process group on POSIX so tool descendants (shell
  * commands the app-server spawned) die with it; a wedged or force-killed
@@ -1075,6 +1080,6 @@ export const codexBackend: SubagentBackend = {
     modelSelection: true,
     reasoningEffort: true,
   },
-  available: Effect.sync(() => resolveCodexBinary() !== undefined),
+  available: () => resolveCodexBinary() !== undefined,
   spawn: makeCodexSession,
 };

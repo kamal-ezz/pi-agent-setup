@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Effect } from "effect";
-import { SubagentManager } from "./src/manager.ts";
+import type { BackendRegistry } from "./src/backend.ts";
 import { claudeBackend } from "./src/backends/claude.ts";
 import type { ParentContext, SpawnTask } from "./src/domain.ts";
-import { createSubagentRuntime, runTool } from "./src/runtime.ts";
+import { createSubagentManager } from "./src/manager.ts";
 
 const parent: ParentContext = {
   parentCwd: process.cwd(),
@@ -22,8 +21,10 @@ function task(prompt: string): SpawnTask {
   };
 }
 
+const registry: BackendRegistry = new Map([["claude", claudeBackend]]);
+
 async function claudeAvailable() {
-  return Effect.runPromise(claudeBackend.available);
+  return claudeBackend.available();
 }
 
 /** Rejecting deadline so a hung wait still reaches finally() and disposes. */
@@ -49,14 +50,13 @@ test(
       return;
     }
 
-    const runtime = createSubagentRuntime();
+    const manager = createSubagentManager(registry);
     try {
-      const manager = await runtime.runPromise(SubagentManager);
-      const started = await runTool(
-        runtime,
-        manager.spawn("claude", task("Reply with exactly: hello claude")),
+      const started = await manager.spawn(
+        "claude",
+        task("Reply with exactly: hello claude"),
       );
-      await deadline(runTool(runtime, manager.waitFor([started.id])), 45_000);
+      await deadline(manager.waitFor([started.id]), 45_000);
 
       const done = manager.view.get(started.id);
       assert.equal(done?.status, "done");
@@ -64,7 +64,7 @@ test(
       assert.ok(done?.meta.nativeSessionId);
       assert.ok(done?.meta.sessionFilePath?.endsWith(".jsonl"));
     } finally {
-      await runtime.dispose();
+      await manager.disposeAll();
     }
   },
 );
@@ -78,16 +78,12 @@ test(
       return;
     }
 
-    const runtime = createSubagentRuntime();
+    const manager = createSubagentManager(registry);
     try {
-      const manager = await runtime.runPromise(SubagentManager);
-      const started = await runTool(
-        runtime,
-        manager.spawn(
-          "claude",
-          task(
-            "Write a detailed 10,000-word essay about the history of computing.",
-          ),
+      const started = await manager.spawn(
+        "claude",
+        task(
+          "Write a detailed 10,000-word essay about the history of computing.",
         ),
       );
 
@@ -104,16 +100,13 @@ test(
       assert.equal(manager.view.get(started.id)?.status, "running");
       assert.ok(manager.view.get(started.id)?.liveAssistant?.text);
 
-      const report = await deadline(
-        runTool(runtime, manager.cancel([started.id])),
-        20_000,
-      );
+      const report = await deadline(manager.cancel([started.id]), 20_000);
 
       assert.equal(report[0]?.cancelled, true);
       assert.equal(manager.view.get(started.id)?.status, "error");
       assert.equal(manager.view.get(started.id)?.errorText, "Run was aborted");
     } finally {
-      await runtime.dispose();
+      await manager.disposeAll();
     }
   },
 );

@@ -20,15 +20,16 @@ import {
   type SDKResultMessage,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { Cause, Scope } from "effect";
-import { Effect, Queue, Stream } from "effect";
-import type { SubagentBackend, SubagentSession } from "../backend.ts";
+import {
+  createEventChannel,
+  type SubagentBackend,
+  type SubagentSession,
+} from "../backend.ts";
 import type {
   QueuedMessage,
   ReasoningEffort,
   RunOutcome,
   SpawnTask,
-  SubagentEvent,
   SubagentMeta,
   TranscriptPart,
 } from "../domain.ts";
@@ -284,18 +285,13 @@ interface NativeQueuedMessage extends QueuedMessage {
   readonly afterResponse: number;
 }
 
-const makeClaudeSession = (
-  task: SpawnTask,
-): Effect.Effect<SubagentSession, SpawnError, Scope.Scope> =>
-  Effect.gen(function* () {
-    const input = new ClaudeInput();
-    const abortController = new AbortController();
-    const events = yield* Queue.make<SubagentEvent, Cause.Done>();
-    const emit = (event: SubagentEvent) => {
-      Queue.offerUnsafe(events, event);
-    };
+async function makeClaudeSession(task: SpawnTask): Promise<SubagentSession> {
+  const input = new ClaudeInput();
+  const abortController = new AbortController();
+  const channel = createEventChannel();
+  const emit = channel.emit;
 
-    const state = {
+  const state = {
       closed: false,
       activeRun: false,
       interruptRequested: false,
@@ -317,39 +313,38 @@ const makeClaudeSession = (
       } satisfies SubagentMeta as SubagentMeta,
     };
 
-    const thinkingBudget = task.reasoningEffort
-      ? THINKING_BUDGETS[task.reasoningEffort]
-      : undefined;
-    const claudeBinary = resolveClaudeBinary();
-    const nativeQuery = yield* Effect.try({
-      try: () =>
-        query({
-          prompt: input,
-          options: {
-            cwd: task.cwd,
-            // Headless children cannot answer approval prompts. The caller
-            // already chose to launch an autonomous subagent, so let it use
-            // its tools without interactive permission checks.
-            permissionMode: "bypassPermissions",
-            allowDangerouslySkipPermissions: true,
-            // For cwds pi marked untrusted, restrict to user-level settings so
-            // an untrusted project's config cannot reconfigure the child.
-            ...(task.parent.projectTrusted
-              ? {}
-              : { settingSources: ["user" as const] }),
-            includePartialMessages: true,
-            abortController,
-            ...(claudeBinary
-              ? { pathToClaudeCodeExecutable: claudeBinary }
-              : {}),
-            ...(task.model ? { model: task.model } : {}),
-            ...(thinkingBudget !== undefined
-              ? { maxThinkingTokens: thinkingBudget }
-              : {}),
-          },
-        }),
-      catch: (error) => new SpawnError({ message: boundedError(error) }),
+  const thinkingBudget = task.reasoningEffort
+    ? THINKING_BUDGETS[task.reasoningEffort]
+    : undefined;
+  const claudeBinary = resolveClaudeBinary();
+  let nativeQuery: ReturnType<typeof query>;
+  try {
+    nativeQuery = query({
+      prompt: input,
+      options: {
+        cwd: task.cwd,
+        // Headless children cannot answer approval prompts. The caller
+        // already chose to launch an autonomous subagent, so let it use
+        // its tools without interactive permission checks.
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
+        // For cwds pi marked untrusted, restrict to user-level settings so
+        // an untrusted project's config cannot reconfigure the child.
+        ...(task.parent.projectTrusted
+          ? {}
+          : { settingSources: ["user" as const] }),
+        includePartialMessages: true,
+        abortController,
+        ...(claudeBinary ? { pathToClaudeCodeExecutable: claudeBinary } : {}),
+        ...(task.model ? { model: task.model } : {}),
+        ...(thinkingBudget !== undefined
+          ? { maxThinkingTokens: thinkingBudget }
+          : {}),
+      },
     });
+  } catch (error) {
+    throw new SpawnError({ message: boundedError(error) });
+  }
 
     let resolvePumpDone: (() => void) | undefined;
     const pumpDone = new Promise<void>((resolve) => {
@@ -563,17 +558,18 @@ const makeClaudeSession = (
             emit({ _tag: "BackendError", message: failure });
           }
           state.closed = true;
-          Queue.endUnsafe(events);
+          channel.end();
         }
         resolvePumpDone?.();
       }
     };
 
-    yield* Effect.addFinalizer(() =>
-      Effect.promise(async () => {
+    let closing: Promise<void> | undefined;
+    const close = () =>
+      (closing ??= (async () => {
         // Settle before marking closed: the pump's finally skips settlement
         // once closed, and every run must end in a RunSettled even when the
-        // scope closes mid-run.
+        // session closes mid-run.
         if (state.activeRun) {
           settle({ _tag: "Interrupted", partialText: partialText() });
         }
@@ -582,9 +578,8 @@ const makeClaudeSession = (
         abortController.abort();
         nativeQuery.close();
         await waitBounded(pumpDone, INTERRUPT_TIMEOUT_MS);
-        Queue.endUnsafe(events);
-      }),
-    );
+        channel.end();
+      })());
 
     void pump();
 
@@ -632,18 +627,17 @@ const makeClaudeSession = (
     submit(task.prompt);
 
     return {
-      meta: Effect.sync(() => state.meta),
-      events: Stream.fromQueue(events),
-      send: (text) =>
-        Effect.suspend((): Effect.Effect<void, SendError> => {
-          if (state.closed) {
-            return new SendError({ message: "Subagent session is closed." });
-          }
-          return submit(text)
-            ? Effect.void
-            : new SendError({ message: "Subagent session is closed." });
-        }),
-      interrupt: Effect.promise(async () => {
+      meta: () => state.meta,
+      attach: channel.attach,
+      send: (text) => {
+        if (state.closed || !submit(text)) {
+          return Promise.reject(
+            new SendError({ message: "Subagent session is closed." }),
+          );
+        }
+        return Promise.resolve();
+      },
+      interrupt: async () => {
         if (state.closed || !state.activeRun) return;
         const version = state.runVersion;
         state.interruptRequested = true;
@@ -682,17 +676,18 @@ const makeClaudeSession = (
           input.end();
           abortController.abort();
           nativeQuery.close();
-          Queue.endUnsafe(events);
+          channel.end();
         }
-      }),
+      },
+      close,
     } satisfies SubagentSession;
-  });
+}
 
 // --- Backend -----------------------------------------------------------------
 
 export const claudeBackend: SubagentBackend = {
   name: "claude",
   capabilities: { steering: true, modelSelection: true, reasoningEffort: true },
-  available: Effect.sync(() => resolveClaudeBinary() !== undefined),
+  available: () => resolveClaudeBinary() !== undefined,
   spawn: makeClaudeSession,
 };

@@ -1,28 +1,21 @@
 /**
  * SubagentManager — owns the registry of running/finished subagents.
  *
- * Each subagent is a scoped `SubagentSession` from a `SubagentBackend` plus a
- * pump fiber that folds its normalized event stream into a mutable
- * `SubagentSnapshot`. Closing a subagent's scope kills the underlying
- * session/process and stops the pump.
+ * Each subagent is a `SubagentSession` from a `SubagentBackend` whose
+ * normalized event stream is folded into a mutable `SubagentSnapshot`.
+ * Closing a subagent kills the underlying session/process and ends its
+ * stream.
  *
  * The manager also exposes a synchronous `SubagentReadModel` so the
  * imperative TUI components (which render synchronously) can read snapshots
- * and issue fire-and-forget commands without touching the Effect runtime.
+ * and issue fire-and-forget commands without touching async plumbing.
  */
 
-import {
-  Context,
-  Effect,
-  Exit,
-  Fiber,
-  Layer,
-  Result,
-  Scope,
-  Stream,
-} from "effect";
-import type { SubagentBackend, SubagentSession } from "./backend.ts";
-import { BackendRegistry } from "./backend.ts";
+import type {
+  BackendRegistry,
+  SubagentBackend,
+  SubagentSession,
+} from "./backend.ts";
 import type {
   BackendName,
   LiveToolState,
@@ -48,6 +41,61 @@ const ERROR_TEXT_MAX_LENGTH = 4_096;
 
 function bounded(text: string) {
   return text.slice(0, ERROR_TEXT_MAX_LENGTH);
+}
+
+// --- Async helpers ---------------------------------------------------------------
+
+export interface WaitOptions {
+  readonly signal?: AbortSignal;
+  readonly interruptMessage?: string;
+}
+
+/** Resolve with the promise's value, "timeout" at the deadline, or "error" on
+ * rejection. The underlying work keeps running. */
+function settleWithin<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+): Promise<T | "timeout" | "error"> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve("timeout"), timeoutMs);
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve("error");
+      },
+    );
+  });
+}
+
+/** Await the promise, but reject with `interruptMessage` when the signal
+ * fires first. The underlying work continues detached. */
+function raceAbort<T>(promise: Promise<T>, options: WaitOptions): Promise<T> {
+  const { signal, interruptMessage } = options;
+  if (!signal) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () =>
+      reject(new Error(interruptMessage ?? "Operation was aborted."));
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 // --- Internal state -----------------------------------------------------------
@@ -76,12 +124,12 @@ interface MutableSnapshot {
 interface Entry {
   snapshot: MutableSnapshot;
   session: SubagentSession;
-  scope: Scope.Closeable;
-  pump?: Fiber.Fiber<void>;
   liveToolMap: Map<string, LiveToolState>;
   /** Idle restart dispatched but RunStarted not folded yet; counts as running
    * so concurrent restarts cannot race past the cap. */
   restarting?: boolean;
+  /** Single close execution: cancel, pruning, and disposeAll converge here. */
+  closing?: Promise<void>;
 }
 
 // --- Read model ----------------------------------------------------------------
@@ -119,46 +167,54 @@ export interface CancelResult {
 }
 
 export interface SubagentManagerShape {
+  /** Throws SpawnError | ConcurrencyLimitError | BackendUnavailableError.
+   * An abort via `options.signal` rejects the wait; the session is closed as
+   * soon as the backend finishes creating it. */
   spawn(
     backend: BackendName,
     task: SpawnTask,
-  ): Effect.Effect<
-    SubagentSnapshot,
-    SpawnError | ConcurrencyLimitError | BackendUnavailableError
-  >;
+    options?: WaitOptions,
+  ): Promise<SubagentSnapshot>;
   /**
    * Wait until all listed subagents are settled. Unknown ids are treated as
    * settled (the tool layer validates ids first). While waiting, settles for
-   * these ids are marked "consumed". Interruption (tool abort) releases the
-   * interest and leaves the subagents running.
+   * these ids are marked "consumed". An abort releases the interest and
+   * leaves the subagents running.
    */
   waitFor(
     ids: ReadonlyArray<string>,
     onPending?: (pending: string[]) => void,
-  ): Effect.Effect<void>;
+    options?: WaitOptions,
+  ): Promise<void>;
   /** Cancel running subagents; resolves when they have settled. */
   cancel(
     ids: ReadonlyArray<string>,
-  ): Effect.Effect<ReadonlyArray<CancelResult>>;
-  send(id: string, text: string): Effect.Effect<void, SendError>;
-  get(id: string): Effect.Effect<SubagentSnapshot | undefined>;
-  readonly list: Effect.Effect<ReadonlyArray<SubagentSnapshot>>;
-  readonly disposeAll: Effect.Effect<void>;
+    options?: WaitOptions,
+  ): Promise<ReadonlyArray<CancelResult>>;
+  /** Rejects with SendError. */
+  send(id: string, text: string): Promise<void>;
+  get(id: string): SubagentSnapshot | undefined;
+  list(): ReadonlyArray<SubagentSnapshot>;
+  disposeAll(): Promise<void>;
   readonly view: SubagentReadModel;
 }
 
-export class SubagentManager extends Context.Service<
-  SubagentManager,
-  SubagentManagerShape
->()("subagents/SubagentManager") {}
-
 // --- Implementation --------------------------------------------------------------
 
-const makeManager = Effect.gen(function* () {
-  const registry = yield* BackendRegistry;
-  // Detached forker for sync contexts (read-model commands, pruning) that
-  // preserves the manager's services instead of using the global runtime.
-  const runDetached = Effect.runForkWith(yield* Effect.context());
+export function createSubagentManager(
+  registry: BackendRegistry,
+): SubagentManagerShape {
+  /** Detached cleanup work (read-model commands, pruning, aborted spawns).
+   * Tracked so disposeAll can wait for it within its bound. */
+  const cleanupTasks = new Set<Promise<unknown>>();
+  const runCleanup = (task: Promise<unknown>) => {
+    const tracked = task.then(
+      () => undefined,
+      () => undefined,
+    );
+    cleanupTasks.add(tracked);
+    void tracked.finally(() => cleanupTasks.delete(tracked));
+  };
 
   const entries = new Map<string, Entry>();
   const waitInterest = new Map<string, number>();
@@ -167,7 +223,6 @@ const makeManager = Effect.gen(function* () {
    * re-registering during notification are not visited in the same sweep. */
   let changeWaiters: Array<() => void> = [];
   const idListeners = new Map<string, Set<() => void>>();
-  const cleanups = new Set<Fiber.Fiber<unknown>>();
   let counter = 0;
   let reserved = 0;
   let disposed = false;
@@ -196,15 +251,11 @@ const makeManager = Effect.gen(function* () {
     }
   };
 
-  /** Resolves on the next state change. Interruption unregisters the waiter. */
-  const nextChange = Effect.callback<void>((resume) => {
-    const waiter = () => resume(Effect.void);
-    changeWaiters.push(waiter);
-    return Effect.sync(() => {
-      const index = changeWaiters.indexOf(waiter);
-      if (index >= 0) changeWaiters.splice(index, 1);
+  /** Resolves on the next state change. */
+  const nextChange = () =>
+    new Promise<void>((resolve) => {
+      changeWaiters.push(resolve);
     });
-  });
 
   const runningCount = () =>
     [...entries.values()].filter(
@@ -222,8 +273,8 @@ const makeManager = Effect.gen(function* () {
     }
   };
 
-  const closeEntryScope = (entry: Entry) =>
-    Scope.close(entry.scope, Exit.void).pipe(Effect.ignore);
+  const closeEntry = (entry: Entry) =>
+    (entry.closing ??= entry.session.close().catch(() => undefined));
 
   const pruneSettled = () => {
     if (entries.size <= MAX_TRACKED) return;
@@ -240,9 +291,7 @@ const makeManager = Effect.gen(function* () {
     for (const entry of candidates) {
       if (entries.size <= MAX_TRACKED) break;
       entries.delete(entry.snapshot.id);
-      const fiber = runDetached(closeEntryScope(entry));
-      cleanups.add(fiber);
-      fiber.addObserver(() => cleanups.delete(fiber));
+      runCleanup(closeEntry(entry));
     }
   };
 
@@ -361,272 +410,232 @@ const makeManager = Effect.gen(function* () {
     notify(s.id);
   };
 
-  const spawn = (backendName: BackendName, task: SpawnTask) =>
-    Effect.gen(function* () {
-      // Reserve synchronously (before the first yield inside doSpawn) so
-      // parallel tool calls cannot race past the global cap.
-      yield* Effect.suspend(
-        (): Effect.Effect<void, SpawnError | ConcurrencyLimitError> => {
-          if (disposed) {
-            return new SpawnError({
-              message: "Subagent manager is shutting down.",
+  const spawn = async (
+    backendName: BackendName,
+    task: SpawnTask,
+    options: WaitOptions = {},
+  ): Promise<SubagentSnapshot> => {
+    // Reserve synchronously (before the first await) so parallel tool calls
+    // cannot race past the global cap.
+    if (disposed) {
+      throw new SpawnError({ message: "Subagent manager is shutting down." });
+    }
+    if (runningCount() + reserved >= MAX_RUNNING) {
+      throw new ConcurrencyLimitError({
+        message: `Max ${MAX_RUNNING} subagents can run concurrently. Wait for one to finish (subagent_wait) before spawning another.`,
+      });
+    }
+    reserved++;
+    try {
+      const backend: SubagentBackend | undefined = registry.get(backendName);
+      if (!backend) {
+        throw new BackendUnavailableError({
+          message: `Unknown backend "${backendName}".`,
+        });
+      }
+      if (!(await backend.available())) {
+        throw new BackendUnavailableError({
+          message: `Backend "${backendName}" is not available on this machine (binary/SDK/credentials missing).`,
+        });
+      }
+
+      // Spawning is not cancellable mid-flight; an abort rejects the wait
+      // and the session (once created) is closed in the background so no
+      // live child leaks without a registry entry.
+      const sessionPromise = backend.spawn(task);
+      let session: SubagentSession;
+      try {
+        session = await raceAbort(sessionPromise, options);
+      } catch (error) {
+        runCleanup(
+          sessionPromise.then(
+            (created) => created.close(),
+            () => undefined,
+          ),
+        );
+        throw error;
+      }
+      if (options.signal?.aborted || disposed) {
+        runCleanup(session.close().catch(() => undefined));
+        throw disposed
+          ? new SpawnError({
+              message: "Subagent manager shut down while spawning.",
+            })
+          : new Error(options.interruptMessage ?? "Operation was aborted.");
+      }
+
+      const id = `sa-${++counter}`;
+      const meta = session.meta();
+      const entry: Entry = {
+        snapshot: {
+          id,
+          backend: backendName,
+          title: task.title,
+          prompt: task.prompt,
+          cwd: task.cwd,
+          status: "running",
+          createdAt: Date.now(),
+          meta,
+          usage: { contextWindow: meta.contextWindow },
+          transcript: [],
+          liveTools: [],
+          queued: [],
+          finalText: "",
+          turns: 0,
+        },
+        session,
+        liveToolMap: new Map(),
+      };
+      entries.set(id, entry);
+
+      // Pump: fold the event stream into the snapshot. If the stream ends
+      // while the subagent still looks running, the backend died out from
+      // under us.
+      session.attach(
+        (event) => foldEvent(entry, event),
+        () => {
+          if (entry.snapshot.status === "running") {
+            settle(entry, {
+              _tag: "Failed",
+              errorText: "Backend event stream ended unexpectedly",
             });
           }
-          if (runningCount() + reserved >= MAX_RUNNING) {
-            return new ConcurrencyLimitError({
-              message: `Max ${MAX_RUNNING} subagents can run concurrently. Wait for one to finish (subagent_wait) before spawning another.`,
-            });
-          }
-          reserved++;
-          return Effect.void;
         },
       );
 
-      let pendingScope: Scope.Closeable | undefined;
-      let pendingEntryId: string | undefined;
-      const doSpawn = Effect.gen(function* () {
-        const backend: SubagentBackend | undefined = registry.get(backendName);
-        if (!backend) {
-          return yield* new BackendUnavailableError({
-            message: `Unknown backend "${backendName}".`,
-          });
-        }
-        const available = yield* backend.available;
-        if (!available) {
-          return yield* new BackendUnavailableError({
-            message: `Backend "${backendName}" is not available on this machine (binary/SDK/credentials missing).`,
-          });
-        }
+      notify(id);
+      return entry.snapshot as SubagentSnapshot;
+    } finally {
+      reserved--;
+      notify();
+    }
+  };
 
-        const scope = yield* Scope.make();
-        pendingScope = scope;
-        const session = yield* Scope.provide(backend.spawn(task), scope);
-        if (disposed) {
-          yield* Scope.close(scope, Exit.void);
-          pendingScope = undefined;
-          return yield* new SpawnError({
-            message: "Subagent manager shut down while spawning.",
-          });
-        }
-
-        const id = `sa-${++counter}`;
-        const meta = yield* session.meta;
-        const entry: Entry = {
-          snapshot: {
-            id,
-            backend: backendName,
-            title: task.title,
-            prompt: task.prompt,
-            cwd: task.cwd,
-            status: "running",
-            createdAt: Date.now(),
-            meta,
-            usage: { contextWindow: meta.contextWindow },
-            transcript: [],
-            liveTools: [],
-            queued: [],
-            finalText: "",
-            turns: 0,
-          },
-          session,
-          scope,
-          liveToolMap: new Map(),
-        };
-        entries.set(id, entry);
-        pendingEntryId = id;
-
-        // Pump: fold the event stream into the snapshot. Tied to the entry
-        // scope, so closing the scope stops it. If the stream ends while the
-        // subagent still looks running, the backend died out from under us.
-        const pump = Stream.runForEach(session.events, (event) =>
-          Effect.sync(() => foldEvent(entry, event)),
-        ).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              if (entry.snapshot.status === "running") {
-                settle(entry, {
-                  _tag: "Failed",
-                  errorText: "Backend event stream ended unexpectedly",
-                });
-              }
-            }),
-          ),
-        );
-        entry.pump = yield* Scope.provide(Effect.forkScoped(pump), scope);
-
-        notify(id);
-        pendingScope = undefined;
-        pendingEntryId = undefined;
-        return entry.snapshot as SubagentSnapshot;
-      });
-
-      return yield* doSpawn.pipe(
-        Effect.onExit(() =>
-          Effect.gen(function* () {
-            if (pendingEntryId) entries.delete(pendingEntryId);
-            if (pendingScope) yield* Scope.close(pendingScope, Exit.void).pipe(Effect.ignore);
-          }),
-        ),
-        Effect.ensuring(
-          Effect.sync(() => {
-            reserved--;
-            notify();
-          }),
-        ),
-      );
-    });
-
-  const waitFor = (
+  const waitFor = async (
     ids: ReadonlyArray<string>,
     onPending?: (pending: string[]) => void,
-  ) =>
-    Effect.suspend(() => {
-      const unique = [...new Set(ids)];
-      addInterest(unique);
-      const loop = Effect.gen(function* () {
-        while (true) {
-          const pending = unique.filter(
-            (id) => entries.get(id)?.snapshot.status === "running",
-          );
-          if (pending.length === 0) return;
-          onPending?.(pending);
-          yield* nextChange;
-        }
-      });
-      return loop.pipe(
-        Effect.ensuring(
-          Effect.sync(() => {
-            releaseInterest(unique);
-            pruneSettled();
-          }),
-        ),
-      );
-    });
-
-  /** Interrupt one running entry, force-closing its scope after 5s. */
-  const abortEntry = (entry: Entry) =>
-    Effect.gen(function* () {
-      if (entry.snapshot.status !== "running") return;
-      const graceful = yield* entry.session.interrupt.pipe(
-        Effect.timeout(STOP_TIMEOUT_MS),
-        Effect.result,
-      );
-      if (Result.isFailure(graceful)) {
-        // Settle before closing the scope so the pump's stream-ended
-        // fallback ("Backend event stream ended unexpectedly") cannot win
-        // the race and report the wrong terminal reason.
-        yield* Effect.sync(() => {
-          settle(entry, { _tag: "Interrupted" });
-          entry.snapshot.errorText =
-            "Abort deadline exceeded; session was force-disposed";
-          notify(entry.snapshot.id);
-        });
-        // Bound the close like disposeAll does: a stuck backend finalizer
-        // must not hang cancel after the run is already settled.
-        yield* closeEntryScope(entry).pipe(
-          Effect.timeout(STOP_TIMEOUT_MS),
-          Effect.ignore,
+    options: WaitOptions = {},
+  ) => {
+    const unique = [...new Set(ids)];
+    addInterest(unique);
+    try {
+      while (true) {
+        const pending = unique.filter(
+          (id) => entries.get(id)?.snapshot.status === "running",
         );
+        if (pending.length === 0) return;
+        onPending?.(pending);
+        await raceAbort(nextChange(), options);
       }
-    });
+    } finally {
+      releaseInterest(unique);
+      pruneSettled();
+    }
+  };
 
-  const cancel = (ids: ReadonlyArray<string>) =>
-    Effect.suspend(() => {
-      const unique = [...new Set(ids)];
-      const running = unique
-        .map((id) => entries.get(id))
-        .filter(
-          (entry): entry is Entry => entry?.snapshot.status === "running",
-        );
-      const runningIds = running.map((entry) => entry.snapshot.id);
-      // Mark consumed before interrupting so cancellation does not also
-      // enqueue duplicate automatic result messages into the parent.
-      addInterest(runningIds);
-      const work = Effect.gen(function* () {
-        yield* Effect.forEach(running, abortEntry, {
-          concurrency: "unbounded",
-        });
-        while (running.some((entry) => entry.snapshot.status === "running")) {
-          yield* nextChange;
-        }
-      });
-      return work.pipe(
-        Effect.ensuring(
-          Effect.sync(() => {
-            releaseInterest(runningIds);
-            pruneSettled();
-          }),
-        ),
-        Effect.map((): ReadonlyArray<CancelResult> =>
-          unique.map((id) => {
-            const snapshot = entries.get(id)?.snapshot;
-            return {
-              id,
-              title: snapshot?.title ?? "?",
-              status: snapshot?.status ?? "error",
-              cancelled: runningIds.includes(id),
-            };
-          }),
-        ),
+  /** Interrupt one running entry, force-closing its session after 5s. */
+  const abortEntry = async (entry: Entry) => {
+    if (entry.snapshot.status !== "running") return;
+    const graceful = await settleWithin(
+      entry.session.interrupt().then(() => "ok" as const),
+      STOP_TIMEOUT_MS,
+    );
+    if (graceful !== "ok") {
+      // Settle before closing so the stream-ended fallback ("Backend event
+      // stream ended unexpectedly") cannot win the race and report the
+      // wrong terminal reason.
+      settle(entry, { _tag: "Interrupted" });
+      entry.snapshot.errorText =
+        "Abort deadline exceeded; session was force-disposed";
+      notify(entry.snapshot.id);
+      // Bound the close like disposeAll does: a stuck backend teardown must
+      // not hang cancel after the run is already settled.
+      await settleWithin(closeEntry(entry), STOP_TIMEOUT_MS);
+    }
+  };
+
+  const cancel = async (
+    ids: ReadonlyArray<string>,
+    options: WaitOptions = {},
+  ): Promise<ReadonlyArray<CancelResult>> => {
+    const unique = [...new Set(ids)];
+    const running = unique
+      .map((id) => entries.get(id))
+      .filter(
+        (entry): entry is Entry => entry?.snapshot.status === "running",
       );
-    });
-
-  const send = (id: string, text: string) =>
-    Effect.suspend((): Effect.Effect<void, SendError> => {
-      const entry = entries.get(id);
-      if (!entry || disposed) {
-        return new SendError({
-          message: `Subagent "${id}" is no longer tracked.`,
-        });
+    const runningIds = running.map((entry) => entry.snapshot.id);
+    // Mark consumed before interrupting so cancellation does not also
+    // enqueue duplicate automatic result messages into the parent.
+    addInterest(runningIds);
+    try {
+      // Interrupts run detached: an aborted cancel wait must not cancel the
+      // termination that was already requested.
+      for (const entry of running) runCleanup(abortEntry(entry));
+      while (running.some((entry) => entry.snapshot.status === "running")) {
+        await raceAbort(nextChange(), options);
       }
-      // Restarting a settled subagent occupies a running slot again, so it
-      // must respect the same cap as spawn. Steering an already-running one
-      // does not consume additional capacity.
-      if (entry.snapshot.status !== "running") {
-        if (runningCount() + reserved >= MAX_RUNNING) {
-          return new SendError({
+      return unique.map((id) => {
+        const snapshot = entries.get(id)?.snapshot;
+        return {
+          id,
+          title: snapshot?.title ?? "?",
+          status: snapshot?.status ?? "error",
+          cancelled: runningIds.includes(id),
+        };
+      });
+    } finally {
+      releaseInterest(runningIds);
+      pruneSettled();
+    }
+  };
+
+  const send = (id: string, text: string): Promise<void> => {
+    const entry = entries.get(id);
+    if (!entry || disposed) {
+      return Promise.reject(
+        new SendError({ message: `Subagent "${id}" is no longer tracked.` }),
+      );
+    }
+    // Restarting a settled subagent occupies a running slot again, so it
+    // must respect the same cap as spawn. Steering an already-running one
+    // does not consume additional capacity.
+    if (entry.snapshot.status !== "running") {
+      if (runningCount() + reserved >= MAX_RUNNING) {
+        return Promise.reject(
+          new SendError({
             message: `Max ${MAX_RUNNING} subagents can run concurrently; restarting "${id}" would exceed that.`,
-          });
-        }
-        // Occupy the slot synchronously: the RunStarted that flips status
-        // arrives via the async pump, and two concurrent restarts must not
-        // both pass the check in that window. Cleared by RunStarted/settle,
-        // or here when the backend rejects the send.
-        entry.restarting = true;
-        return entry.session.send(text).pipe(
-          Effect.onError(() =>
-            Effect.sync(() => {
-              entry.restarting = false;
-            }),
-          ),
+          }),
         );
       }
-      return entry.session.send(text);
-    });
+      // Occupy the slot synchronously: the RunStarted that flips status
+      // arrives via the event stream, and two concurrent restarts must not
+      // both pass the check in that window. Cleared by RunStarted/settle,
+      // or here when the backend rejects the send.
+      entry.restarting = true;
+      return entry.session.send(text).catch((error) => {
+        entry.restarting = false;
+        throw error;
+      });
+    }
+    return entry.session.send(text);
+  };
 
-  const disposeAll = Effect.gen(function* () {
+  const disposeAll = async () => {
     disposed = true;
     const all = [...entries.values()];
     entries.clear();
-    yield* Effect.forEach(
-      all,
-      (entry) =>
-        closeEntryScope(entry).pipe(
-          Effect.timeout(STOP_TIMEOUT_MS),
-          Effect.ignore,
-        ),
-      { concurrency: "unbounded" },
+    await Promise.all(
+      all.map((entry) => settleWithin(closeEntry(entry), STOP_TIMEOUT_MS)),
     );
-    // Pruning cleanups are detached; bound them like everything else so a
-    // stuck backend finalizer cannot block runtime shutdown indefinitely.
-    yield* Effect.forEach(
-      [...cleanups],
-      (fiber) =>
-        Fiber.await(fiber).pipe(Effect.timeout(STOP_TIMEOUT_MS), Effect.ignore),
-      { concurrency: "unbounded" },
-    ).pipe(Effect.ignore);
-    yield* Effect.sync(() => notify());
-  });
+    // Detached cleanups are bounded too; a stuck backend teardown cannot
+    // block shutdown indefinitely.
+    await settleWithin(
+      Promise.allSettled([...cleanupTasks]),
+      STOP_TIMEOUT_MS,
+    );
+    notify();
+  };
 
   const view: SubagentReadModel = {
     list: () => [...entries.values()].map((entry) => entry.snapshot),
@@ -649,38 +658,28 @@ const makeManager = Effect.gen(function* () {
       };
     },
     requestSend: (id, text) => {
-      runDetached(send(id, text).pipe(Effect.ignore));
+      runCleanup(send(id, text).catch(() => undefined));
     },
     requestAbort: (id) => {
       const entry = entries.get(id);
       if (!entry) return;
       // UI-initiated aborts are not "consumed": the failed result still
       // flows back to the parent as a follow-up message, matching v1.
-      runDetached(abortEntry(entry).pipe(Effect.ignore));
+      runCleanup(abortEntry(entry));
     },
     setOnSettled: (hook) => {
       onSettled = hook;
     },
   };
 
-  // Safety net: disposing the ManagedRuntime tears everything down even if
-  // the extension forgot to call disposeAll explicitly.
-  yield* Effect.addFinalizer(() => disposeAll);
-
-  return SubagentManager.of({
+  return {
     spawn,
     waitFor,
     cancel,
     send,
-    get: (id) => Effect.sync(() => entries.get(id)?.snapshot),
-    list: Effect.sync(() => [...entries.values()].map((e) => e.snapshot)),
+    get: (id) => entries.get(id)?.snapshot,
+    list: () => [...entries.values()].map((e) => e.snapshot),
     disposeAll,
     view,
-  });
-});
-
-export const SubagentManagerLive: Layer.Layer<
-  SubagentManager,
-  never,
-  BackendRegistry
-> = Layer.effect(SubagentManager, makeManager);
+  };
+}

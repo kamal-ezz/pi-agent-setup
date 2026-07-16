@@ -13,9 +13,8 @@
  * Unawaited subagents queue their result as a follow-up message when they
  * settle. `/subagents` opens a picker + full interactive takeover view.
  *
- * Architecture: Effect v4 generators throughout (backends -> manager ->
- * runtime); this file is the async boundary where tool handlers run effects
- * against one shared ManagedRuntime. The public/runtime policy wires Pi and
+ * Architecture: plain async/await throughout (backends -> manager); one
+ * manager instance per session. The public/runtime policy wires Pi and
  * Codex only and routes every task to GPT-5.6 Luna, Terra, or Sol.
  */
 
@@ -48,7 +47,10 @@ import {
   formatActivityStatus,
   formatContextUtilization,
 } from "./src/format.ts";
-import { SubagentManager, type SubagentManagerShape } from "./src/manager.ts";
+import {
+  createSubagentManager,
+  type SubagentManagerShape,
+} from "./src/manager.ts";
 import {
   buildSubagentResultMessage,
   buildSubagentSpawnResult,
@@ -73,11 +75,7 @@ import {
   routeSubagentModel,
 } from "./src/policy.ts";
 import { createDeferredResultDelivery } from "./src/result-delivery.ts";
-import {
-  createSubagentRuntime,
-  runTool,
-  type SubagentRuntime,
-} from "./src/runtime.ts";
+import { createBackendRegistry } from "./src/registry.ts";
 import { openSubagentPicker } from "./src/ui/takeover.ts";
 
 const SUBAGENT_OUTPUT_MAX_BYTES = 24 * 1024;
@@ -132,27 +130,23 @@ function resolveChildProjectTrust(options: {
 }
 
 export default function (pi: ExtensionAPI) {
-  let runtime: SubagentRuntime | undefined;
-  let managerPromise: Promise<SubagentManagerShape> | undefined;
+  let manager: SubagentManagerShape | undefined;
   let sessionContext: ExtensionContext | undefined;
   let ui: ExtensionUIContext | undefined;
   let unsubStatus: (() => void) | undefined;
   const resultDelivery = createDeferredResultDelivery<SubagentSnapshot>();
 
-  const getRuntime = () => (runtime ??= createSubagentRuntime());
-
-  /** Resolve the manager service once per runtime and wire the extension hooks. */
+  /** Create the manager once per session and wire the extension hooks. */
   const getManager = () => {
-    managerPromise ??= getRuntime()
-      .runPromise(SubagentManager)
-      .then((manager) => {
-        manager.view.setOnSettled(onSettled);
-        unsubStatus?.();
-        unsubStatus = manager.view.subscribe(() => updateStatus(manager));
-        updateStatus(manager);
-        return manager;
-      });
-    return managerPromise;
+    if (!manager) {
+      const created = createSubagentManager(createBackendRegistry());
+      created.view.setOnSettled(onSettled);
+      unsubStatus?.();
+      unsubStatus = created.view.subscribe(() => updateStatus(created));
+      updateStatus(created);
+      manager = created;
+    }
+    return manager;
   };
 
   const updateStatus = (manager: SubagentManagerShape) => {
@@ -219,12 +213,11 @@ export default function (pi: ExtensionAPI) {
     unsubStatus?.();
     unsubStatus = undefined;
     ui?.setStatus("subagents", undefined);
-    const closing = runtime;
-    runtime = undefined;
-    managerPromise = undefined;
-    // Disposing the runtime runs the manager finalizer, which tears down all
-    // subagent scopes (and, later, their real child processes).
-    await closing?.dispose();
+    const closing = manager;
+    manager = undefined;
+    // disposeAll tears down every subagent session (and their real child
+    // processes) within a bounded shutdown window.
+    await closing?.disposeAll();
   });
 
   // --- Tools -------------------------------------------------------------
@@ -262,7 +255,7 @@ export default function (pi: ExtensionAPI) {
       ),
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const manager = await getManager();
+      const manager = getManager();
       const harness = params.harness;
 
       const cwd = path.resolve(ctx.cwd, params.working_dir ?? ".");
@@ -281,9 +274,9 @@ export default function (pi: ExtensionAPI) {
         parentTrusted: ctx.isProjectTrusted(),
       });
       assertHarnessProjectTrust(harness, projectTrusted);
-      const snap = await runTool(
-        getRuntime(),
-        manager.spawn(harness, {
+      const snap = await manager.spawn(
+        harness,
+        {
           prompt: params.prompt,
           title,
           cwd,
@@ -298,7 +291,7 @@ export default function (pi: ExtensionAPI) {
             inheritedThinkingLevel: pi.getThinkingLevel(),
             modelRegistry: ctx.modelRegistry,
           },
-        }),
+        },
         {
           signal,
           interruptMessage: "Subagent spawn aborted.",
@@ -340,7 +333,7 @@ export default function (pi: ExtensionAPI) {
       }),
     }),
     async execute(_toolCallId, params, signal, onUpdate) {
-      const manager = await getManager();
+      const manager = getManager();
       const ids = [...new Set(params.ids)];
       if (ids.length === 0)
         throw new Error("Provide at least one subagent id.");
@@ -352,16 +345,16 @@ export default function (pi: ExtensionAPI) {
         );
       }
 
-      await runTool(
-        getRuntime(),
-        manager.waitFor(ids, (pending) => {
+      await manager.waitFor(
+        ids,
+        (pending) => {
           onUpdate?.({
             content: [
               { type: "text", text: `Waiting for ${pending.join(", ")}...` },
             ],
             details: { pending },
           });
-        }),
+        },
         { signal, interruptMessage: "Wait aborted. Subagents keep running." },
       );
 
@@ -427,7 +420,7 @@ export default function (pi: ExtensionAPI) {
       }),
     }),
     async execute(_toolCallId, params, signal) {
-      const manager = await getManager();
+      const manager = getManager();
       const ids = [...new Set(params.ids)];
       if (ids.length === 0)
         throw new Error("Provide at least one subagent id.");
@@ -440,7 +433,7 @@ export default function (pi: ExtensionAPI) {
         );
       }
 
-      const report = await runTool(getRuntime(), manager.cancel(ids), {
+      const report = await manager.cancel(ids, {
         signal,
         interruptMessage: "Subagent cancellation aborted; agents may still be running.",
       });
@@ -474,7 +467,7 @@ export default function (pi: ExtensionAPI) {
       }),
     }),
     async execute(_toolCallId, params) {
-      const manager = await getManager();
+      const manager = getManager();
       const snap = manager.view.get(params.id);
       if (!snap) {
         const known = manager.view.list().map((s) => s.id);
@@ -508,7 +501,7 @@ export default function (pi: ExtensionAPI) {
     description: SUBAGENT_LIST_TOOL_DESCRIPTION,
     parameters: Type.Object({}),
     async execute() {
-      const manager = await getManager();
+      const manager = getManager();
       const subs = manager.view.list();
       const text =
         subs.length === 0
@@ -592,7 +585,7 @@ export default function (pi: ExtensionAPI) {
           );
         return;
       }
-      const manager = await getManager();
+      const manager = getManager();
       if (manager.view.size() === 0) {
         ctx.ui.notify(
           "No subagents yet. The agent spawns them with subagent_spawn.",

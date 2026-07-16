@@ -23,6 +23,7 @@ managed_files=(
   extensions/turn-notifications.ts
   skills/frontend-design/SKILL.md
   skills/frontend-design/LICENSE.txt
+  package.json
   tsconfig.json
 )
 
@@ -41,6 +42,8 @@ managed_directories=(
 # Honor the repository ignore rules so installed dependencies and other
 # machine-local files are never treated as managed setup files.
 while IFS= read -r -d '' relative_path; do
+  # `--cached` also lists tracked files deleted from the working tree.
+  [[ -e "${repo_dir}/${relative_path}" ]] || continue
   managed_files+=("$relative_path")
 done < <(
   git -C "$repo_dir" ls-files --cached --others --exclude-standard -z -- \

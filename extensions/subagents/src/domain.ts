@@ -8,7 +8,6 @@
  */
 
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
-import { Data } from "effect";
 
 export const BACKEND_NAMES = ["pi", "claude", "codex"] as const;
 export type BackendName = (typeof BACKEND_NAMES)[number];
@@ -226,22 +225,34 @@ export function formatElapsed(snap: SubagentSnapshot) {
 
 // --- Errors -------------------------------------------------------------------
 
-export class SpawnError extends Data.TaggedError("SpawnError")<{
-  readonly message: string;
-}> {}
+export class SpawnError extends Error {
+  readonly _tag = "SpawnError";
+  constructor({ message }: { readonly message: string }) {
+    super(message);
+    this.name = "SpawnError";
+  }
+}
 
-export class BackendUnavailableError extends Data.TaggedError(
-  "BackendUnavailableError",
-)<{
-  readonly message: string;
-}> {}
+export class BackendUnavailableError extends Error {
+  readonly _tag = "BackendUnavailableError";
+  constructor({ message }: { readonly message: string }) {
+    super(message);
+    this.name = "BackendUnavailableError";
+  }
+}
 
-export class ConcurrencyLimitError extends Data.TaggedError(
-  "ConcurrencyLimitError",
-)<{
-  readonly message: string;
-}> {}
+export class ConcurrencyLimitError extends Error {
+  readonly _tag = "ConcurrencyLimitError";
+  constructor({ message }: { readonly message: string }) {
+    super(message);
+    this.name = "ConcurrencyLimitError";
+  }
+}
 
-export class SendError extends Data.TaggedError("SendError")<{
-  readonly message: string;
-}> {}
+export class SendError extends Error {
+  readonly _tag = "SendError";
+  constructor({ message }: { readonly message: string }) {
+    super(message);
+    this.name = "SendError";
+  }
+}

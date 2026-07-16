@@ -13,9 +13,8 @@
  * "N background terminal(s) running • /ps to view". `/ps` opens a two-stage
  * full-screen overlay (list → read-only detail with stdout/stderr toggle).
  *
- * Architecture: Effect v4 core (manager service behind one ManagedRuntime);
- * this file is the async boundary where tool handlers run effects via
- * runTool. Node stream plumbing inside the manager is plain callbacks.
+ * Architecture: one TerminalManager instance per session, plain async/await
+ * throughout. Node stream plumbing inside the manager is plain callbacks.
  */
 
 import * as fs from "node:fs";
@@ -29,7 +28,10 @@ import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Markdown, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import type { TerminalSnapshot } from "./src/domain.ts";
-import { TerminalManager, type TerminalManagerShape } from "./src/manager.ts";
+import {
+  createTerminalManager,
+  type TerminalManagerShape,
+} from "./src/manager.ts";
 import {
   BG_KILL_PARAMETER_DESCRIPTIONS,
   BG_KILL_TOOL_DESCRIPTION,
@@ -47,38 +49,29 @@ import {
   describeTerminal,
 } from "./src/prompt.ts";
 import { createDeferredResultDelivery } from "./src/result-delivery.ts";
-import {
-  createTerminalRuntime,
-  runTool,
-  type TerminalRuntime,
-} from "./src/runtime.ts";
 import { sanitizeText } from "./src/ui/output-view.ts";
 import { openTerminalPicker } from "./src/ui/ps.ts";
 
 const WIDGET_KEY = "background-terminals";
 
 export default function (pi: ExtensionAPI) {
-  let runtime: TerminalRuntime | undefined;
-  let managerPromise: Promise<TerminalManagerShape> | undefined;
+  let manager: TerminalManagerShape | undefined;
   let sessionContext: ExtensionContext | undefined;
   let ui: ExtensionUIContext | undefined;
   let unsubStatus: (() => void) | undefined;
   const resultDelivery = createDeferredResultDelivery<TerminalSnapshot>();
 
-  const getRuntime = () => (runtime ??= createTerminalRuntime());
-
-  /** Resolve the manager service once per runtime and wire the extension hooks. */
+  /** Create the manager once per session and wire the extension hooks. */
   const getManager = () => {
-    managerPromise ??= getRuntime()
-      .runPromise(TerminalManager)
-      .then((manager) => {
-        manager.view.setOnSettled(onSettled);
-        unsubStatus?.();
-        unsubStatus = manager.view.subscribe(() => updateWidget(manager));
-        updateWidget(manager);
-        return manager;
-      });
-    return managerPromise;
+    if (!manager) {
+      const created = createTerminalManager();
+      created.view.setOnSettled(onSettled);
+      unsubStatus?.();
+      unsubStatus = created.view.subscribe(() => updateWidget(created));
+      updateWidget(created);
+      manager = created;
+    }
+    return manager;
   };
 
   /** One-line widget directly above the editor, only while ≥1 is running.
@@ -195,10 +188,9 @@ export default function (pi: ExtensionAPI) {
     }
     widgetRunning = 0;
     ui = undefined;
-    const closing = runtime;
-    runtime = undefined;
-    managerPromise = undefined;
-    await closing?.dispose();
+    const closing = manager;
+    manager = undefined;
+    await closing?.disposeAll();
   });
 
   // --- Tools -------------------------------------------------------------
@@ -223,7 +215,7 @@ export default function (pi: ExtensionAPI) {
       ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const manager = await getManager();
+      const manager = getManager();
 
       const command = params.command.trim();
       if (!command) throw new Error("command must not be empty.");
@@ -238,10 +230,7 @@ export default function (pi: ExtensionAPI) {
       const title =
         sanitizeText(params.title).replace(/\s+/g, " ").trim().slice(0, 80) ||
         "terminal";
-      const snap = await runTool(
-        getRuntime(),
-        manager.start({ command, title, cwd }),
-      );
+      const snap = await manager.start({ command, title, cwd });
 
       return {
         content: [{ type: "text", text: buildStartResult(snap) }],
@@ -258,7 +247,7 @@ export default function (pi: ExtensionAPI) {
       id: Type.String({ description: BG_STATUS_PARAMETER_DESCRIPTIONS.id }),
     }),
     async execute(_toolCallId, params) {
-      const manager = await getManager();
+      const manager = getManager();
       const snap = manager.view.get(params.id);
       if (!snap) {
         const known = manager.view.list().map((s) => s.id);
@@ -290,7 +279,7 @@ export default function (pi: ExtensionAPI) {
     description: BG_LIST_TOOL_DESCRIPTION,
     parameters: Type.Object({}),
     async execute() {
-      const manager = await getManager();
+      const manager = getManager();
       const terminals = manager.view.list();
       const text =
         terminals.length === 0
@@ -320,7 +309,7 @@ export default function (pi: ExtensionAPI) {
       }),
     }),
     async execute(_toolCallId, params, signal) {
-      const manager = await getManager();
+      const manager = getManager();
       const ids = [...new Set(params.ids)];
       if (ids.length === 0)
         throw new Error("Provide at least one terminal id.");
@@ -333,7 +322,7 @@ export default function (pi: ExtensionAPI) {
         );
       }
 
-      const report = await runTool(getRuntime(), manager.kill(ids), {
+      const report = await manager.kill(ids, {
         signal,
         interruptMessage:
           "Kill wait aborted; termination continues in the background.",
@@ -422,7 +411,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("ps", {
     description: "List and inspect background terminals",
     handler: async (_args, ctx) => {
-      const manager = await getManager();
+      const manager = getManager();
       if (ctx.mode !== "tui") {
         if (ctx.hasUI) {
           const terminals = manager.view.list();

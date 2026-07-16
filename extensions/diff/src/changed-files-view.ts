@@ -9,7 +9,6 @@ import {
   truncateToWidth,
   visibleWidth,
 } from "@earendil-works/pi-tui";
-import { Effect } from "effect";
 import { runCommand } from "./process.ts";
 
 const DIFF_SCROLL_STEP = 5;
@@ -72,14 +71,15 @@ function cleanDisplayPath(path: string) {
   return path.replace(/[\r\n\t]/g, " ");
 }
 
-const run = (cwd: string, args: string[]) =>
-  runCommand("git", args, cwd, 10_000);
+const run = (cwd: string, args: string[], signal?: AbortSignal) =>
+  runCommand("git", args, cwd, 10_000, signal);
 
-const loadFile = Effect.fn("diff-browser.loadFile")(function* (
+async function loadFile(
   repoRoot: string,
   changedPath: ChangedPath,
   hasHead: boolean,
-) {
+  signal?: AbortSignal,
+): Promise<ChangedFile> {
   const useNoIndex = changedPath.status === "??" || !hasHead;
   const diffArguments = useNoIndex
     ? [
@@ -104,10 +104,10 @@ const loadFile = Effect.fn("diff-browser.loadFile")(function* (
   const statArguments = useNoIndex
     ? ["diff", "--no-index", "--numstat", "--", "/dev/null", changedPath.path]
     : ["diff", "--numstat", "HEAD", "--", changedPath.path];
-  const [diffResult, statResult] = yield* Effect.all(
-    [run(repoRoot, diffArguments), run(repoRoot, statArguments)],
-    { concurrency: "unbounded" },
-  );
+  const [diffResult, statResult] = await Promise.all([
+    run(repoRoot, diffArguments, signal),
+    run(repoRoot, statArguments, signal),
+  ]);
   const stats = parseNumstat(statResult.stdout);
   const allDiffLines = diffResult.stdout.trimEnd().split("\n");
   if (diffResult.stdoutTruncated) {
@@ -131,56 +131,51 @@ const loadFile = Effect.fn("diff-browser.loadFile")(function* (
     path: cleanDisplayPath(changedPath.path),
     status: changedPath.status,
   } satisfies ChangedFile;
-});
+}
 
-export const loadChangedFiles = Effect.fn("diff-browser.loadChangedFiles")(
-  function* (cwd: string) {
-    const rootResult = yield* run(cwd, ["rev-parse", "--show-toplevel"]);
-    if (rootResult.code !== 0) return null;
+export async function loadChangedFiles(
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<ChangedFile[] | null> {
+  const rootResult = await run(cwd, ["rev-parse", "--show-toplevel"], signal);
+  if (rootResult.code !== 0) return null;
 
-    const repoRoot = rootResult.stdout.replace(/\r?\n$/, "");
-    const [statusResult, headResult] = yield* Effect.all(
-      [
-        run(repoRoot, [
-          "status",
-          "--porcelain=v1",
-          "-z",
-          "--untracked-files=all",
-        ]),
-        run(repoRoot, ["rev-parse", "--verify", "HEAD"]),
-      ],
-      { concurrency: "unbounded" },
+  const repoRoot = rootResult.stdout.replace(/\r?\n$/, "");
+  const [statusResult, headResult] = await Promise.all([
+    run(
+      repoRoot,
+      ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+      signal,
+    ),
+    run(repoRoot, ["rev-parse", "--verify", "HEAD"], signal),
+  ]);
+  if (statusResult.code !== 0) return null;
+  if (statusResult.stdoutTruncated) {
+    throw new Error("Git status output exceeded the 64 MiB safety limit");
+  }
+
+  const changedPaths = parseChangedPaths(statusResult.stdout);
+  if (changedPaths.length > MAX_CHANGED_FILES) {
+    throw new Error(
+      `Working tree has ${changedPaths.length} changed files; the HTML review limit is ${MAX_CHANGED_FILES}`,
     );
-    if (statusResult.code !== 0) return null;
-    if (statusResult.stdoutTruncated) {
-      return yield* Effect.fail(new Error("Git status output exceeded the 64 MiB safety limit"));
+  }
+  const files: ChangedFile[] = [];
+  let totalDiffBytes = 0;
+  for (const changedPath of changedPaths) {
+    const file = await loadFile(repoRoot, changedPath, headResult.code === 0, signal);
+    totalDiffBytes += file.diff.reduce(
+      (bytes, line) => bytes + Buffer.byteLength(line, "utf8") + 1,
+      0,
+    );
+    if (totalDiffBytes > MAX_TOTAL_DIFF_BYTES) {
+      throw new Error("Combined diff exceeds the 32 MiB HTML review safety limit");
     }
+    files.push(file);
+  }
 
-    const changedPaths = parseChangedPaths(statusResult.stdout);
-    if (changedPaths.length > MAX_CHANGED_FILES) {
-      return yield* Effect.fail(
-        new Error(`Working tree has ${changedPaths.length} changed files; the HTML review limit is ${MAX_CHANGED_FILES}`),
-      );
-    }
-    const files: ChangedFile[] = [];
-    let totalDiffBytes = 0;
-    for (const changedPath of changedPaths) {
-      const file = yield* loadFile(repoRoot, changedPath, headResult.code === 0);
-      totalDiffBytes += file.diff.reduce(
-        (bytes, line) => bytes + Buffer.byteLength(line, "utf8") + 1,
-        0,
-      );
-      if (totalDiffBytes > MAX_TOTAL_DIFF_BYTES) {
-        return yield* Effect.fail(
-          new Error("Combined diff exceeds the 32 MiB HTML review safety limit"),
-        );
-      }
-      files.push(file);
-    }
-
-    return files;
-  },
-);
+  return files;
+}
 
 function padToWidth(text: string, width: number) {
   const truncated = truncateToWidth(text, width, "");

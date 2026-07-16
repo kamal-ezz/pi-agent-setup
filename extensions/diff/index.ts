@@ -2,23 +2,21 @@ import { basename } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadChangedFiles } from "./src/changed-files-view.ts";
 import { openDiffHtml, writeDiffHtml } from "./src/html-diff.ts";
-import {
-  createRuntime,
-  runEffect,
-  type GitInfoRuntime,
-} from "./src/runtime.ts";
+import { isAbortError } from "./src/process.ts";
 
 export default function diffBrowser(pi: ExtensionAPI) {
-  let runtime: GitInfoRuntime | undefined;
-  const getRuntime = () => (runtime ??= createRuntime());
-
   pi.registerCommand("diff", {
     description: "Open local changes as a polished HTML diff",
     handler: async (_args, ctx) => {
-      const files = await runEffect(getRuntime(), loadChangedFiles(ctx.cwd), {
-        signal: ctx.signal,
-        interruptMessage: "Loading local changes was cancelled.",
-      });
+      let files;
+      try {
+        files = await loadChangedFiles(ctx.cwd, ctx.signal);
+      } catch (error) {
+        if (isAbortError(error)) {
+          throw new Error("Loading local changes was cancelled.");
+        }
+        throw error;
+      }
       if (files === null) {
         ctx.ui.notify("Not a git repository", "warning");
         return;
@@ -44,11 +42,5 @@ export default function diffBrowser(pi: ExtensionAPI) {
         );
       }
     },
-  });
-
-  pi.on("session_shutdown", async () => {
-    const closing = runtime;
-    runtime = undefined;
-    await closing?.dispose();
   });
 }

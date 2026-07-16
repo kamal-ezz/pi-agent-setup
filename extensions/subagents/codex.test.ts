@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Effect } from "effect";
+import type { BackendRegistry } from "./src/backend.ts";
 import { codexBackend } from "./src/backends/codex.ts";
 import type { ParentContext, SpawnTask } from "./src/domain.ts";
-import { SubagentManager } from "./src/manager.ts";
-import { createSubagentRuntime, runTool } from "./src/runtime.ts";
+import { createSubagentManager } from "./src/manager.ts";
 
 const parent: ParentContext = {
   parentCwd: process.cwd(),
@@ -20,6 +19,8 @@ function task(prompt: string): SpawnTask {
   };
 }
 
+const registry: BackendRegistry = new Map([["codex", codexBackend]]);
+
 function deadline<A>(operation: Promise<A>, timeoutMs: number) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
@@ -34,7 +35,7 @@ function deadline<A>(operation: Promise<A>, timeoutMs: number) {
 }
 
 async function codexAvailable() {
-  return Effect.runPromise(codexBackend.available);
+  return codexBackend.available();
 }
 
 test(
@@ -46,15 +47,14 @@ test(
       return;
     }
 
-    const runtime = createSubagentRuntime();
+    const manager = createSubagentManager(registry);
     try {
-      const manager = await runtime.runPromise(SubagentManager);
-      const spawned = await runTool(
-        runtime,
-        manager.spawn("codex", task("Reply with exactly: hello codex")),
+      const spawned = await manager.spawn(
+        "codex",
+        task("Reply with exactly: hello codex"),
       );
 
-      await deadline(runTool(runtime, manager.waitFor([spawned.id])), 60_000);
+      await deadline(manager.waitFor([spawned.id]), 60_000);
       const done = manager.view.get(spawned.id);
       assert.equal(done?.status, "done");
       assert.match(done?.finalText ?? "", /hello codex/i);
@@ -62,7 +62,7 @@ test(
       assert.ok(done?.meta.nativeSessionId);
       assert.ok(done?.meta.sessionFilePath);
     } finally {
-      await runtime.dispose();
+      await manager.disposeAll();
     }
   },
 );
@@ -76,27 +76,20 @@ test(
       return;
     }
 
-    const runtime = createSubagentRuntime();
+    const manager = createSubagentManager(registry);
     try {
-      const manager = await runtime.runPromise(SubagentManager);
-      const spawned = await runTool(
-        runtime,
-        manager.spawn(
-          "codex",
-          task("Run `sleep 30`, then reply with the word finished."),
-        ),
+      const spawned = await manager.spawn(
+        "codex",
+        task("Run `sleep 30`, then reply with the word finished."),
       );
 
       await new Promise((resolve) => setTimeout(resolve, 250));
-      const result = await deadline(
-        runTool(runtime, manager.cancel([spawned.id])),
-        10_000,
-      );
+      const result = await deadline(manager.cancel([spawned.id]), 10_000);
       assert.equal(result[0]?.cancelled, true);
       assert.equal(manager.view.get(spawned.id)?.status, "error");
       assert.equal(manager.view.get(spawned.id)?.errorText, "Run was aborted");
     } finally {
-      await runtime.dispose();
+      await manager.disposeAll();
     }
   },
 );
