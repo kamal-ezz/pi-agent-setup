@@ -86,27 +86,33 @@ async function captureTerminalWrites(run) {
   }
 }
 
-test("TUI completion chimes only while unfocused and consumes focus reports", async () => {
+test("TUI notifies the desktop while unfocused and chimes only while focused", async () => {
   const harness = createHarness();
+  const chimes = () => harness.execCalls.filter(({ command }) => command === "canberra-gtk-play").length;
+  const desktopAlerts = () => harness.execCalls.filter(({ command }) => command === "notify-send").length;
 
   await captureTerminalWrites(async (writes) => {
     await harness.handlers.get("session_start")({}, harness.ctx);
 
-    // Startup is treated as focused, avoiding a false alert on the first turn.
+    // Startup is treated as focused: audible chime, no desktop notification.
     await harness.handlers.get("agent_settled")({}, harness.ctx);
     await flushAlerts();
-    assert.equal(harness.execCalls.length, 0);
+    assert.equal(chimes(), 1);
+    assert.equal(desktopAlerts(), 0);
 
+    // Unfocused: the user must see a desktop notification, not hear the bell.
     assert.deepEqual(harness.input("\x1b[O"), { consume: true });
     await harness.handlers.get("agent_settled")({}, harness.ctx);
     await flushAlerts();
-    assert.equal(harness.execCalls.filter(({ command }) => command === "canberra-gtk-play").length, 1);
+    assert.equal(chimes(), 1);
+    assert.equal(desktopAlerts(), 1);
 
-    // Any real input repairs a missed focus-in report.
+    // Any real input repairs a missed focus-in report, restoring the chime.
     assert.equal(harness.input("x"), undefined);
     await harness.handlers.get("agent_settled")({}, harness.ctx);
     await flushAlerts();
-    assert.equal(harness.execCalls.filter(({ command }) => command === "canberra-gtk-play").length, 1);
+    assert.equal(chimes(), 2);
+    assert.equal(desktopAlerts(), 1);
 
     assert.deepEqual(harness.input("\x1b[Iabc"), { data: "abc" });
     await harness.handlers.get("session_shutdown")({}, harness.ctx);
@@ -117,7 +123,24 @@ test("TUI completion chimes only while unfocused and consumes focus reports", as
   });
 
   assert.equal(harness.inputUnsubscribed, 1);
-  assert.equal(harness.execCalls.some(({ command }) => command === "notify-send"), false);
+});
+
+test("TUI unfocused falls back to the chime when notify-send fails", async () => {
+  const harness = createHarness({
+    execImpl: async (command) =>
+      command === "notify-send" ? { code: 1, stdout: "", stderr: "no notification daemon" } : { code: 0, stdout: "", stderr: "" },
+  });
+
+  await captureTerminalWrites(async () => {
+    await harness.handlers.get("session_start")({}, harness.ctx);
+    harness.input("\x1b[O");
+    await harness.handlers.get("agent_settled")({}, harness.ctx);
+    await flushAlerts();
+    await harness.handlers.get("session_shutdown")({}, harness.ctx);
+  });
+
+  assert.equal(harness.execCalls.filter(({ command }) => command === "notify-send").length, 1);
+  assert.equal(harness.execCalls.filter(({ command }) => command === "canberra-gtk-play").length, 1);
 });
 
 test("a successful automatic retry clears an earlier abort suppression", async () => {
@@ -143,7 +166,7 @@ test("a successful automatic retry clears an earlier abort suppression", async (
     await harness.handlers.get("session_shutdown")({}, harness.ctx);
   });
 
-  assert.equal(harness.execCalls.filter(({ command }) => command === "canberra-gtk-play").length, 1);
+  assert.equal(harness.execCalls.filter(({ command }) => command === "notify-send").length, 1);
 });
 
 test("desktop notifications sanitize content and terminate option parsing", async () => {
@@ -200,7 +223,7 @@ test("deferred idle check skips alerts between goal continuations", async () => 
     harness.setIdle(true);
     await harness.handlers.get("agent_settled")({}, harness.ctx);
     await flushAlerts();
-    assert.equal(harness.execCalls.filter(({ command }) => command === "canberra-gtk-play").length, 1);
+    assert.equal(harness.execCalls.filter(({ command }) => command === "notify-send").length, 1);
     await harness.handlers.get("session_shutdown")({}, harness.ctx);
   });
 });
@@ -252,7 +275,7 @@ test("print mode never blocks a persistent goal continuation to notify", async (
   await harness.handlers.get("session_shutdown")({}, harness.ctx);
 });
 
-test("session shutdown aborts an in-flight chime without a late terminal bell", async () => {
+test("session shutdown aborts an in-flight desktop alert without a late fallback bell", async () => {
   let markStarted;
   const started = new Promise((resolve) => {
     markStarted = resolve;
@@ -307,7 +330,9 @@ test("a tool cancellation followed by a successful assistant still alerts", asyn
     await flushAlerts();
     await harness.handlers.get("session_shutdown")({}, harness.ctx);
   });
-  assert.equal(harness.execCalls.filter(({ command }) => command === "canberra-gtk-play").length, 1);
+  const call = harness.execCalls.find(({ command }) => command === "notify-send");
+  assert.ok(call);
+  assert.equal(call.args.at(-1), "Fallback completed.");
 });
 
 test("tool-only completion does not reuse an older assistant overview", async () => {

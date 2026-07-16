@@ -221,12 +221,26 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	async function notify(ctx: ExtensionContext, body?: string, signal?: AbortSignal): Promise<void> {
-		// Focus reporting is enabled only in the interactive terminal. Ring only
-		// when this Pi tab has lost focus; focused tabs need no completion alert.
+		// Focus reporting is enabled only in the interactive terminal. A focused
+		// tab gets a brief chime the user can hear in place; an unfocused tab gets
+		// a desktop notification they can see, falling back to the chime only when
+		// notify-send is unavailable.
 		if (ctx.mode === "tui") {
-			if (!terminalFocused) await ringBell(signal);
+			if (terminalFocused) {
+				await ringBell(signal);
+				return;
+			}
+			try {
+				await sendDesktopNotification(ctx, body, signal);
+			} catch {
+				if (!signal?.aborted) await ringBell(signal);
+			}
 			return;
 		}
+		await sendDesktopNotification(ctx, body, signal);
+	}
+
+	async function sendDesktopNotification(ctx: ExtensionContext, body?: string, signal?: AbortSignal): Promise<void> {
 		const result = await pi.exec(
 			"notify-send",
 			[
@@ -354,9 +368,17 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (action === "test") {
 				try {
-					if (ctx.mode === "tui") await ringBell();
-					else await notify(ctx, "Pi turn-complete alert test");
-					ctx.ui.notify(ctx.mode === "tui" ? "Test completion chime played." : "Test notification sent.", "info");
+					// The terminal is necessarily focused while typing this command, so
+					// exercise both channels: the focused chime and the unfocused
+					// desktop notification.
+					if (ctx.mode === "tui") {
+						await ringBell();
+						await sendDesktopNotification(ctx, "Pi turn-complete alert test");
+						ctx.ui.notify("Test completion chime played and desktop notification sent.", "info");
+					} else {
+						await notify(ctx, "Pi turn-complete alert test");
+						ctx.ui.notify("Test notification sent.", "info");
+					}
 				} catch (error) {
 					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 				}
