@@ -17,7 +17,7 @@ A portable snapshot of the global Pi configuration from `~/.pi/agent`.
 - Background terminals for servers, watchers, and long-running commands (`/ps`)
 - Self-contained HTML changes review with file filtering, line numbers, theme switching, keyboard navigation, and addition/deletion rails (`/diff`)
 - GPT-5.6 Luna, Terra, and Sol subagents on Pi or Codex with automatic model routing, background execution, and takeover UI (`/subagents`)
-- Frontend design, background terminal, and subagent skills
+- Frontend design, background terminal, Mermaid diagram, and subagent skills
 
 ## Install
 
@@ -73,6 +73,7 @@ git diff
 └── skills/
     ├── background-terminals/
     ├── frontend-design/
+    ├── mermaid-diagram/
     └── subagents/
 ```
 

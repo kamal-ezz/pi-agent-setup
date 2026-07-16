@@ -35,6 +35,7 @@ managed_directories=(
   extensions/goal
   extensions/subagents
   skills/background-terminals
+  skills/mermaid-diagram
   skills/subagents
   themes
 )
