@@ -4,6 +4,7 @@ import { completeSimple, type Message } from "@earendil-works/pi-ai/compat";
 import {
   CustomEditor,
   getAgentDir,
+  keyText,
   type BuildSystemPromptOptions,
   type ExtensionAPI,
   type ExtensionContext,
@@ -33,6 +34,7 @@ import {
 const MODE_ENTRY_TYPE = "auto-plan-mode";
 const STATUS_KEY = "auto-plan-mode";
 const ADVISOR_APPROVAL_WIDGET_KEY = "auto-plan-approval";
+const MESSAGE_DELIVERY_WIDGET_KEY = "auto-plan-message-delivery";
 const REVIEW_MAX_TOKENS = 300;
 const REVIEW_INPUT_LIMIT = 50_000;
 const DOUBLE_INTERRUPT_WINDOW_MS = 750;
@@ -159,6 +161,14 @@ export function createInterruptHandler(
 
     ctx.abort();
   };
+}
+
+export function formatMessageDeliveryHint(
+  steerKey: string,
+  queueKey: string,
+  editQueueKey: string,
+): string {
+  return `${steerKey} steer next turn · ${queueKey} queue after run · ${editQueueKey} edit queue`;
 }
 
 export function unknownStreamingSlashCommand(
@@ -769,11 +779,26 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
 
   pi.on("agent_start", async (_event, ctx) => {
     startTitleSpinner(ctx);
+    ctx.ui.setWidget(
+      MESSAGE_DELIVERY_WIDGET_KEY,
+      [
+        ctx.ui.theme.fg(
+          "dim",
+          formatMessageDeliveryHint(
+            keyText("tui.input.submit"),
+            keyText("app.message.followUp"),
+            keyText("app.message.dequeue"),
+          ),
+        ),
+      ],
+      { placement: "belowEditor" },
+    );
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
     submittedPrompt = undefined;
     stopTitleSpinner(ctx);
+    ctx.ui.setWidget(MESSAGE_DELIVERY_WIDGET_KEY, undefined);
   });
 
   pi.on("session_tree", async (_event, ctx) => {
@@ -787,6 +812,7 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
     presenceUnsubscribe?.();
     presenceUnsubscribe = undefined;
     ctx.ui.setWidget(ADVISOR_APPROVAL_WIDGET_KEY, undefined);
+    ctx.ui.setWidget(MESSAGE_DELIVERY_WIDGET_KEY, undefined);
     // Pi preserves the active tool set across /reload. Restore the pre-Plan
     // snapshot before teardown so a reloaded instance can capture all tools.
     if (toolsBeforePlan) {

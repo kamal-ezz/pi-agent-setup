@@ -12,6 +12,7 @@ import autoPlanMode, {
   createInterruptHandler,
   formatAdvisorReviewMessage,
   formatAgentInstructions,
+  formatMessageDeliveryHint,
   hasSensitiveOrExternalPath,
   prepareReviewAction,
   terminalTitle,
@@ -53,6 +54,13 @@ test("input arrow prefixes only the first editable line", () => {
     ["────", "➜  text", " wrap", "────"],
   );
   assert.deepEqual(addInputArrow(["──", "", "──"], 2, "➜"), ["──", "➜ ", "──"]);
+});
+
+test("active-run delivery choices are explicit", () => {
+  assert.equal(
+    formatMessageDeliveryHint("enter", "alt+enter", "alt+up"),
+    "enter steer next turn · alt+enter queue after run · alt+up edit queue",
+  );
 });
 
 test("unknown slash commands cannot become steering messages", () => {
@@ -381,6 +389,22 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
   await handlers.get("session_start")?.({ type: "session_start" }, ctx);
   assert.equal(statuses.at(-1), "◆ auto");
   assert.deepEqual(activeTools, ["read", "bash", "edit", "write", "bg_status", "subagent_spawn"]);
+
+  await handlers.get("agent_start")?.({}, ctx);
+  assert.ok(
+    approvalWidgets.some(
+      (value) =>
+        Array.isArray(value) &&
+        value.some(
+          (line) =>
+            typeof line === "string" &&
+            line.includes("steer next turn") &&
+            line.includes("queue after run"),
+        ),
+    ),
+  );
+  await handlers.get("agent_settled")?.({}, ctx);
+  assert.equal(approvalWidgets.at(-1), undefined);
 
   await shortcut?.handler(ctx);
   assert.equal(statuses.at(-1), "⏸ plan");
