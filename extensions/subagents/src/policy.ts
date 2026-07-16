@@ -4,6 +4,17 @@ import type { BackendName } from "./domain.ts";
 export const PUBLIC_SUBAGENT_HARNESSES = ["pi", "codex"] as const;
 export type PublicSubagentHarness = (typeof PUBLIC_SUBAGENT_HARNESSES)[number];
 
+export function assertHarnessProjectTrust(
+  harness: PublicSubagentHarness,
+  projectTrusted: boolean,
+): void {
+  if (harness === "codex" && !projectTrusted) {
+    throw new Error(
+      "Codex subagents require a trusted working_dir because the Codex app-server runs with host-level write access. Trust that project in Pi or use the Pi harness if its standard tool access is acceptable.",
+    );
+  }
+}
+
 const CHILD_SILENCED_EXTENSION_BASENAMES = new Set(["turn-notifications.ts"]);
 
 export function childExtensionMayLoad(resolvedPath: string): boolean {

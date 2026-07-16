@@ -382,6 +382,8 @@ const makeManager = Effect.gen(function* () {
         },
       );
 
+      let pendingScope: Scope.Closeable | undefined;
+      let pendingEntryId: string | undefined;
       const doSpawn = Effect.gen(function* () {
         const backend: SubagentBackend | undefined = registry.get(backendName);
         if (!backend) {
@@ -397,11 +399,11 @@ const makeManager = Effect.gen(function* () {
         }
 
         const scope = yield* Scope.make();
-        const session = yield* Scope.provide(backend.spawn(task), scope).pipe(
-          Effect.onError(() => Scope.close(scope, Exit.void)),
-        );
+        pendingScope = scope;
+        const session = yield* Scope.provide(backend.spawn(task), scope);
         if (disposed) {
           yield* Scope.close(scope, Exit.void);
+          pendingScope = undefined;
           return yield* new SpawnError({
             message: "Subagent manager shut down while spawning.",
           });
@@ -431,6 +433,7 @@ const makeManager = Effect.gen(function* () {
           liveToolMap: new Map(),
         };
         entries.set(id, entry);
+        pendingEntryId = id;
 
         // Pump: fold the event stream into the snapshot. Tied to the entry
         // scope, so closing the scope stops it. If the stream ends while the
@@ -452,10 +455,18 @@ const makeManager = Effect.gen(function* () {
         entry.pump = yield* Scope.provide(Effect.forkScoped(pump), scope);
 
         notify(id);
+        pendingScope = undefined;
+        pendingEntryId = undefined;
         return entry.snapshot as SubagentSnapshot;
       });
 
       return yield* doSpawn.pipe(
+        Effect.onExit(() =>
+          Effect.gen(function* () {
+            if (pendingEntryId) entries.delete(pendingEntryId);
+            if (pendingScope) yield* Scope.close(pendingScope, Exit.void).pipe(Effect.ignore);
+          }),
+        ),
         Effect.ensuring(
           Effect.sync(() => {
             reserved--;

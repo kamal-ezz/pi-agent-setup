@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  assertHarnessProjectTrust,
   childExtensionMayLoad,
   modelHintForHarness,
   normalizeSubagentModel,
@@ -33,6 +34,15 @@ test("normalizes model hints per GPT harness", () => {
   assert.equal(modelHintForHarness("pi", "gpt-5.6-luna"), "openai-codex/gpt-5.6-luna");
   assert.equal(modelHintForHarness("codex", "gpt-5.6-terra"), "gpt-5.6-terra");
   assert.throws(() => modelHintForHarness("claude", "gpt-5.6-sol"), /disabled/);
+});
+
+test("Codex cannot run unsandboxed in an untrusted working directory", () => {
+  assert.doesNotThrow(() => assertHarnessProjectTrust("pi", false));
+  assert.doesNotThrow(() => assertHarnessProjectTrust("codex", true));
+  assert.throws(
+    () => assertHarnessProjectTrust("codex", false),
+    /require a trusted working_dir/,
+  );
 });
 
 test("headless Pi children exclude desktop notification extensions", () => {

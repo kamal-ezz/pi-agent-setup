@@ -2,7 +2,12 @@
 set -euo pipefail
 
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-agent_dir="${PI_AGENT_DIR:-${HOME}/.pi/agent}"
+agent_dir="${PI_CODING_AGENT_DIR:-${HOME}/.pi/agent}"
+if [[ "$agent_dir" == "~" ]]; then
+  agent_dir="$HOME"
+elif [[ "$agent_dir" == "~/"* ]]; then
+  agent_dir="${HOME}/${agent_dir:2}"
+fi
 timestamp="$(date +%Y%m%d-%H%M%S)"
 backup_dir="${agent_dir}/backups/pi-agent-setup-${timestamp}"
 backed_up=false

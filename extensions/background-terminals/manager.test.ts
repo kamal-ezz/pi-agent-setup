@@ -16,6 +16,7 @@ import type { TerminalSnapshot } from "./src/domain.ts";
 import {
   MAX_RUNNING,
   MAX_TRACKED,
+  SPILL_PER_STREAM_MAX_BYTES,
   TerminalManager,
   type TerminalManagerShape,
 } from "./src/manager.ts";
@@ -545,12 +546,14 @@ test("pruning drops the oldest settled entries past MAX_TRACKED, never running o
     );
 
     const settledIds: string[] = [];
+    let firstSpillPath: string | undefined;
     for (let i = 0; i < MAX_TRACKED + 4; i++) {
       const snap = await runTool(
         runtime,
         manager.start({ command: "true", title: `quick-${i}`, cwd }),
       );
       settledIds.push(snap.id);
+      if (i === 0) firstSpillPath = snap.stdout.spillPath;
       await settlement(manager, snap.id);
     }
 
@@ -560,6 +563,9 @@ test("pruning drops the oldest settled entries past MAX_TRACKED, never running o
     assert.equal(remaining.includes(keeper.id), true);
     // The earliest settled entries were pruned first.
     assert.equal(remaining.includes(settledIds[0]), false);
+    if (firstSpillPath) {
+      assert.ok(await pollUntil(() => !fs.existsSync(firstSpillPath!)));
+    }
     // The latest settled entries survive.
     assert.equal(remaining.includes(settledIds[settledIds.length - 1]), true);
 
@@ -625,6 +631,29 @@ test("a process 'error' event settles failed with errorText and no bogus exit co
     // its code; that must not leak into exitCode.
     assert.equal(failed.exitCode, undefined);
     assert.equal(failed.signal, undefined);
+  });
+});
+
+test("full-log spill stops at the per-stream disk quota", async () => {
+  await withManager(async (manager, runtime) => {
+    const outputBytes = SPILL_PER_STREAM_MAX_BYTES + 1024 * 1024;
+    const started = await runTool(
+      runtime,
+      manager.start({
+        command: nodeCmd(`process.stdout.write("x".repeat(${outputBytes}))`),
+        title: "spill quota",
+        cwd,
+      }),
+    );
+    const initialSpillPath = started.stdout.spillPath;
+    const { snap: done } = await settlement(manager, started.id);
+    assert.equal(done.status, "done");
+    assert.equal(done.stdout.totalBytes, outputBytes);
+    assert.equal(done.stdout.spillPath, undefined);
+    assert.match(done.errorText ?? "", /per-stream safety limit/);
+    if (initialSpillPath) {
+      assert.ok(await pollUntil(() => !fs.existsSync(initialSpillPath)));
+    }
   });
 });
 

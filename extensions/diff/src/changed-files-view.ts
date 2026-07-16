@@ -14,6 +14,8 @@ import { runCommand } from "./process.ts";
 
 const DIFF_SCROLL_STEP = 5;
 const MAX_DIFF_LINES = 20_000;
+const MAX_CHANGED_FILES = 500;
+const MAX_TOTAL_DIFF_BYTES = 32 * 1024 * 1024;
 
 function configuredKeys(
   keybindings: KeybindingsManager,
@@ -33,6 +35,7 @@ export interface ChangedFile {
   diff: string[];
   name: string;
   path: string;
+  status: string;
 }
 
 function parseChangedPaths(output: string) {
@@ -107,6 +110,9 @@ const loadFile = Effect.fn("diff-browser.loadFile")(function* (
   );
   const stats = parseNumstat(statResult.stdout);
   const allDiffLines = diffResult.stdout.trimEnd().split("\n");
+  if (diffResult.stdoutTruncated) {
+    allDiffLines.push("… diff output truncated at the 64 MiB safety limit …");
+  }
   const diff =
     allDiffLines.length > MAX_DIFF_LINES
       ? [
@@ -123,6 +129,7 @@ const loadFile = Effect.fn("diff-browser.loadFile")(function* (
         : diff,
     name: cleanDisplayPath(basename(changedPath.path)),
     path: cleanDisplayPath(changedPath.path),
+    status: changedPath.status,
   } satisfies ChangedFile;
 });
 
@@ -131,7 +138,7 @@ export const loadChangedFiles = Effect.fn("diff-browser.loadChangedFiles")(
     const rootResult = yield* run(cwd, ["rev-parse", "--show-toplevel"]);
     if (rootResult.code !== 0) return null;
 
-    const repoRoot = rootResult.stdout.trim();
+    const repoRoot = rootResult.stdout.replace(/\r?\n$/, "");
     const [statusResult, headResult] = yield* Effect.all(
       [
         run(repoRoot, [
@@ -145,11 +152,30 @@ export const loadChangedFiles = Effect.fn("diff-browser.loadChangedFiles")(
       { concurrency: "unbounded" },
     );
     if (statusResult.code !== 0) return null;
+    if (statusResult.stdoutTruncated) {
+      return yield* Effect.fail(new Error("Git status output exceeded the 64 MiB safety limit"));
+    }
 
     const changedPaths = parseChangedPaths(statusResult.stdout);
+    if (changedPaths.length > MAX_CHANGED_FILES) {
+      return yield* Effect.fail(
+        new Error(`Working tree has ${changedPaths.length} changed files; the HTML review limit is ${MAX_CHANGED_FILES}`),
+      );
+    }
     const files: ChangedFile[] = [];
+    let totalDiffBytes = 0;
     for (const changedPath of changedPaths) {
-      files.push(yield* loadFile(repoRoot, changedPath, headResult.code === 0));
+      const file = yield* loadFile(repoRoot, changedPath, headResult.code === 0);
+      totalDiffBytes += file.diff.reduce(
+        (bytes, line) => bytes + Buffer.byteLength(line, "utf8") + 1,
+        0,
+      );
+      if (totalDiffBytes > MAX_TOTAL_DIFF_BYTES) {
+        return yield* Effect.fail(
+          new Error("Combined diff exceeds the 32 MiB HTML review safety limit"),
+        );
+      }
+      files.push(file);
     }
 
     return files;

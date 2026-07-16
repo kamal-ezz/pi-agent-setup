@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runCommand } from "./src/process.ts";
+import { appendBoundedText, runCommand } from "./src/process.ts";
 import { createRuntime } from "./src/runtime.ts";
 
 const runtime = createRuntime();
@@ -18,6 +18,17 @@ const runNode = (source: string, timeout = 1_000) =>
       timeout,
     ),
   );
+
+test("bounded command capture stops at a UTF-8 boundary", () => {
+  assert.deepEqual(appendBoundedText("ab", "cdef", 4), {
+    text: "abcd",
+    truncated: true,
+  });
+  assert.deepEqual(appendBoundedText("", "a😀b", 4), {
+    text: "a",
+    truncated: true,
+  });
+});
 
 test("captures output and tolerates command failures", async () => {
   const success = await runNode(

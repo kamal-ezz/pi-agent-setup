@@ -29,6 +29,7 @@ const REQUEST_TIMEOUT_MS = 30_000;
 const MODEL_LIST_TIMEOUT_MS = 5_000;
 const INTERRUPT_FALLBACK_MS = 1_500;
 const FORCE_KILL_AFTER_MS = 2_000;
+const TASKKILL_TIMEOUT_MS = 1_000;
 const PREVIEW_MAX_LENGTH = 1_024;
 /** A protocol line larger than this without a newline means a broken peer. */
 const STDOUT_BUFFER_MAX_BYTES = 4 * 1024 * 1024;
@@ -305,6 +306,11 @@ const makeCodexSession = (
   task: SpawnTask,
 ): Effect.Effect<SubagentSession, SpawnError, Scope.Scope> =>
   Effect.gen(function* () {
+    if (!task.parent.projectTrusted) {
+      return yield* new SpawnError({
+        message: "Codex subagents require a trusted working directory.",
+      });
+    }
     const binary = resolveCodexBinary();
     if (!binary) {
       return yield* new SpawnError({
@@ -976,16 +982,44 @@ const makeCodexSession = (
 function killTree(
   child: ChildProcessWithoutNullStreams,
   signal: NodeJS.Signals,
-) {
+): Promise<void> {
+  if (process.platform === "win32" && child.pid) {
+    try {
+      const killer = spawn(
+        "taskkill",
+        ["/PID", String(child.pid), "/T", ...(signal === "SIGKILL" ? ["/F"] : [])],
+        { stdio: "ignore", windowsHide: true },
+      );
+      return new Promise((resolve) => {
+        let settled = false;
+        const finish = (succeeded: boolean) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          if (!succeeded) child.kill(signal);
+          resolve();
+        };
+        const timer = setTimeout(() => {
+          killer.kill();
+          finish(false);
+        }, TASKKILL_TIMEOUT_MS);
+        killer.once("error", () => finish(false));
+        killer.once("exit", (code) => finish(code === 0));
+      });
+    } catch {
+      // Fall through to direct termination when taskkill is unavailable.
+    }
+  }
   if (process.platform !== "win32" && child.pid) {
     try {
       process.kill(-child.pid, signal);
-      return;
+      return Promise.resolve();
     } catch {
       // Group may already be gone; fall through to the direct signal.
     }
   }
   child.kill(signal);
+  return Promise.resolve();
 }
 
 /** SIGTERM is normally enough; the second deadline covers a wedged Rust process. */
@@ -993,9 +1027,10 @@ function terminateChild(
   child: ChildProcessWithoutNullStreams,
   exited: () => boolean,
 ) {
-  if (exited()) return Promise.resolve();
   return new Promise<void>((resolve) => {
     let done = false;
+    let rootExited = exited();
+    let pendingTreeSignals = 0;
     let forceTimer: ReturnType<typeof setTimeout> | undefined;
     let lastTimer: ReturnType<typeof setTimeout> | undefined;
     const finish = () => {
@@ -1005,12 +1040,31 @@ function terminateChild(
       if (lastTimer) clearTimeout(lastTimer);
       resolve();
     };
-    child.once("exit", finish);
-    killTree(child, "SIGTERM");
+    const finishWhenSafe = () => {
+      // On Windows the root can exit before asynchronous `taskkill /T` has
+      // visited its descendants. Do not let that root event end teardown.
+      if (rootExited && pendingTreeSignals === 0) finish();
+    };
+    const signalTree = (signal: NodeJS.Signals) => {
+      pendingTreeSignals += 1;
+      void killTree(child, signal).finally(() => {
+        pendingTreeSignals -= 1;
+        finishWhenSafe();
+      });
+    };
+    child.once("exit", () => {
+      rootExited = true;
+      finishWhenSafe();
+    });
+    signalTree("SIGTERM");
     forceTimer = setTimeout(() => {
-      if (!exited()) killTree(child, "SIGKILL");
+      if (!exited()) signalTree("SIGKILL");
     }, FORCE_KILL_AFTER_MS);
-    lastTimer = setTimeout(finish, FORCE_KILL_AFTER_MS + 500);
+    // Absolute bound covers a hung taskkill plus the exit-event grace period.
+    lastTimer = setTimeout(
+      finish,
+      FORCE_KILL_AFTER_MS + TASKKILL_TIMEOUT_MS + 500,
+    );
   });
 }
 

@@ -236,7 +236,8 @@ export default function (pi: ExtensionAPI) {
       // Collapse whitespace (a newline inside a one-line UI row desyncs the
       // TUI renderer) before bounding the length.
       const title =
-        params.title.replace(/\s+/g, " ").trim().slice(0, 80) || "terminal";
+        sanitizeText(params.title).replace(/\s+/g, " ").trim().slice(0, 80) ||
+        "terminal";
       const snap = await runTool(
         getRuntime(),
         manager.start({ command, title, cwd }),

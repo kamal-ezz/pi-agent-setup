@@ -300,18 +300,19 @@ export default function (pi: ExtensionAPI) {
 		if (inFlight) return inFlight;
 
 		const generation = sessionGeneration;
-		requestController = new AbortController();
+		const controller = new AbortController();
+		requestController = controller;
 		inFlight = (async () => {
 			try {
 				const auth = await resolveAuth(ctx);
-				const payload = await fetchJson(USAGE_URL, auth, {}, requestController?.signal);
+				const payload = await fetchJson(USAGE_URL, auth, {}, controller.signal);
 				if (generation !== sessionGeneration) return undefined;
 				snapshot = normalizeUsage(payload);
 				updateStatus(ctx);
 				updateFiveHourWarning(ctx, snapshot);
 				return snapshot;
 			} finally {
-				if (generation === sessionGeneration) requestController = undefined;
+				if (requestController === controller) requestController = undefined;
 			}
 		})().finally(() => {
 			if (generation === sessionGeneration) inFlight = undefined;

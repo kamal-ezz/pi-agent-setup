@@ -225,6 +225,16 @@ function actionPreview(payload: Record<string, unknown>): string {
   return boundedJson(payload, REVIEW_INPUT_LIMIT);
 }
 
+export function formatAdvisorReviewMessage(options: {
+  cwd: string;
+  recentUserRequest?: string;
+  reviewPayload: Record<string, unknown>;
+  toolDescription?: string;
+  toolName: string;
+}): string {
+  return `Working directory:\n${options.cwd}\n\nRecent user request:\n${options.recentUserRequest || "(unavailable)"}\n\nProposed tool:\n${options.toolName}\n\nTool description:\n${options.toolDescription ?? "(unavailable)"}\n\nProposed arguments:\n${boundedJson(options.reviewPayload, REVIEW_INPUT_LIMIT)}`;
+}
+
 function canonicalPath(path: string): string {
   try {
     return realpathSync(path);
@@ -393,7 +403,13 @@ export default function autoPlanMode(pi: ExtensionAPI): void {
       content: [
         {
           type: "text",
-          text: `Working directory:\n${ctx.cwd}\n\nRecent user request:\n${recentUserIntent(ctx) || "(unavailable)"}\n\nProposed tool:\n${event.toolName}\n\nTool description:\n${tool?.description ?? "(unavailable)"}\n\nProposed arguments:\n${boundedJson(reviewPayload)}`,
+          text: formatAdvisorReviewMessage({
+            cwd: ctx.cwd,
+            recentUserRequest: recentUserIntent(ctx),
+            reviewPayload,
+            toolDescription: tool?.description,
+            toolName: event.toolName,
+          }),
         },
       ],
       timestamp: Date.now(),

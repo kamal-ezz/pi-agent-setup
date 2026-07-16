@@ -19,6 +19,14 @@ export default function (pi: ExtensionAPI) {
 			let requested = args.trim().toLowerCase();
 			if (!requested) {
 				const current = pi.getThinkingLevel();
+				if (ctx.mode !== "tui") {
+					ctx.ui.notify(
+						`Reasoning effort: ${current}. Usage: /effort [${levels.join("|")}]`,
+						"info",
+					);
+					return;
+				}
+
 				const choice = await ctx.ui.select(
 					`Reasoning effort (current: ${current})`,
 					levels.map((level) => (level === current ? `${level} (current)` : level)),

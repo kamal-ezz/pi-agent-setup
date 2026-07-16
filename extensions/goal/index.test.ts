@@ -257,6 +257,24 @@ test("aborting a goal run pauses instead of immediately restarting it", async ()
 	assert.ok(h.notifications.some(({ message }) => message.includes("paused after abort")));
 });
 
+test("an agent infrastructure error pauses rather than falsely blocking the goal", async () => {
+	const h = createHarness();
+	await h.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, h.ctx);
+	await h.commands.get("goal").handler("long task", h.ctx);
+	await tick();
+	await h.handlers.get("agent_start")?.({ type: "agent_start" }, h.ctx);
+	await h.handlers.get("agent_end")?.(
+		{ type: "agent_end", messages: [{ role: "assistant", stopReason: "error" }] },
+		h.ctx,
+	);
+	await h.handlers.get("agent_settled")?.({ type: "agent_settled" }, h.ctx);
+	await tick();
+
+	assert.equal(latestGoal(h.branch)?.status, "paused");
+	assert.equal(h.sent.length, 1);
+	assert.ok(h.notifications.some(({ message }) => message.includes("paused after an agent error")));
+});
+
 test("blocked status is rejected before three goal runs", async () => {
 	const h = createHarness();
 	await h.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, h.ctx);

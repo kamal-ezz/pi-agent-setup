@@ -356,7 +356,8 @@ const makePiSession = (
     const thinkingLevel = (task.reasoningEffort ??
       task.parent.inheritedThinkingLevel) as ThinkingLevel | undefined;
 
-    const session = yield* Effect.tryPromise({
+    const session = yield* Effect.acquireRelease(
+      Effect.tryPromise({
       try: async () => {
         const { loader, settingsManager } = await createChildResources(
           task.cwd,
@@ -384,7 +385,9 @@ const makePiSession = (
         return session;
       },
       catch: (error) => new SpawnError({ message: boundedError(error) }),
-    });
+      }),
+      (acquired) => Effect.promise(() => shutdownAndDisposeChildSession(acquired)),
+    );
 
     const state = {
       closed: false,
@@ -572,7 +575,7 @@ const makePiSession = (
           // Continue with abort/dispose.
         }
         await waitBounded(session.abort(), CHILD_SHUTDOWN_TIMEOUT_MS);
-        await shutdownAndDisposeChildSession(session);
+        // The acquireRelease finalizer owns extension shutdown and disposal.
         Queue.endUnsafe(events);
       }),
     );

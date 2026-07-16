@@ -2,7 +2,12 @@
 set -euo pipefail
 
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-agent_dir="${PI_AGENT_DIR:-${HOME}/.pi/agent}"
+agent_dir="${PI_CODING_AGENT_DIR:-${HOME}/.pi/agent}"
+if [[ "$agent_dir" == "~" ]]; then
+  agent_dir="$HOME"
+elif [[ "$agent_dir" == "~/"* ]]; then
+  agent_dir="${HOME}/${agent_dir:2}"
+fi
 
 managed_files=(
   settings.json

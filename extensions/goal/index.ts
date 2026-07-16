@@ -213,7 +213,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 				);
 			} catch (error) {
 				continuationLaunchPending = false;
-				goal.status = "blocked";
+				goal.status = "paused";
 				goal.lastSummary = `Could not start continuation: ${error instanceof Error ? error.message : String(error)}`;
 				goal.updatedAt = Date.now();
 				persist();
@@ -501,9 +501,11 @@ export default function goalExtension(pi: ExtensionAPI): void {
 				goal.lastSummary = "Paused because the current run was aborted.";
 				ctx.ui.notify("Goal paused after abort. Use /goal resume to continue.", "warning");
 			} else if (goal.status === "active" && currentRunStopReason === "error") {
-				goal.status = "blocked";
-				goal.lastSummary = "Blocked because the agent run ended with an error.";
-				ctx.ui.notify("Goal blocked after an agent error. Use /goal resume to retry.", "error");
+				// Provider/runtime failures are transient execution errors, not proof
+				// that the objective itself is blocked. Pause for explicit retry.
+				goal.status = "paused";
+				goal.lastSummary = "Paused because the agent run ended with an error.";
+				ctx.ui.notify("Goal paused after an agent error. Use /goal resume to retry.", "error");
 			}
 			persist();
 		}

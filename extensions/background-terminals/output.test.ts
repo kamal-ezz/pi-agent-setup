@@ -80,6 +80,12 @@ test("multibyte chunks are never split by eviction", () => {
   assert.equal(view.truncatedBytes, 6);
 });
 
+test("push exposes spill backpressure to the stream owner", () => {
+  const buf = new OutputBuffer(8, () => false);
+  assert.equal(buf.push("output"), false);
+  assert.equal(buf.view().text, "output");
+});
+
 test("spill callback receives every chunk in order, even after eviction", () => {
   const spilled: string[] = [];
   const buf = new OutputBuffer(4, (chunk) => spilled.push(chunk));

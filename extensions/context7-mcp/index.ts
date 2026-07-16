@@ -1,5 +1,4 @@
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -11,6 +10,7 @@ import { Type } from "typebox";
 import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
+	getAgentDir,
 	truncateHead,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
@@ -31,10 +31,14 @@ import {
 	type McpToolInfo,
 } from "./inventory.ts";
 
-const configPath = join(homedir(), ".pi", "agent", "mcp.json");
+const configPath = join(getAgentDir(), "mcp.json");
 const CLIENT_NAME = "pi-mcp";
 const CLIENT_VERSION = "2.0.0";
 const MAX_PAGES = 1_000;
+const MAX_INVENTORY_ITEMS = 1_000;
+const MAX_INVENTORY_BYTES = 4 * 1024 * 1024;
+const MAX_TOOL_SCHEMA_BYTES = 128 * 1024;
+const MAX_TOOL_DESCRIPTION_CHARS = 4_000;
 const MAX_DIAGNOSTIC_CHARS = 2_000;
 
 type ListedTool = Awaited<ReturnType<Client["listTools"]>>["tools"][number];
@@ -127,11 +131,19 @@ async function collectPages<T>(
 	fetchPage: (cursor: string | undefined) => Promise<{ items: T[]; nextCursor?: string }>,
 ): Promise<T[]> {
 	const items: T[] = [];
+	let encodedBytes = 0;
 	let cursor: string | undefined;
 	const seen = new Set<string>();
 	for (let page = 0; page < MAX_PAGES; page++) {
 		const result = await fetchPage(cursor);
+		encodedBytes += Buffer.byteLength(JSON.stringify(result.items), "utf8");
+		if (encodedBytes > MAX_INVENTORY_BYTES) {
+			throw new Error(`MCP inventory exceeded ${MAX_INVENTORY_BYTES} encoded bytes`);
+		}
 		items.push(...result.items);
+		if (items.length > MAX_INVENTORY_ITEMS) {
+			throw new Error(`MCP inventory exceeded ${MAX_INVENTORY_ITEMS} items`);
+		}
 		if (!result.nextCursor) return items;
 		if (seen.has(result.nextCursor)) throw new Error(`MCP pagination returned a repeated cursor: ${result.nextCursor}`);
 		seen.add(result.nextCursor);
@@ -141,7 +153,7 @@ async function collectPages<T>(
 }
 
 async function listAllTools(client: Client, timeoutMs: number): Promise<ListedTool[]> {
-	return collectPages(async (cursor) => {
+	const tools = await collectPages(async (cursor) => {
 		const result = await withTimeout(
 			(signal) => client.listTools(cursor ? { cursor } : undefined, { signal }),
 			timeoutMs,
@@ -149,6 +161,16 @@ async function listAllTools(client: Client, timeoutMs: number): Promise<ListedTo
 		);
 		return { items: result.tools, nextCursor: result.nextCursor };
 	});
+	for (const tool of tools) {
+		const schemaBytes = Buffer.byteLength(JSON.stringify(tool.inputSchema ?? {}), "utf8");
+		if (schemaBytes > MAX_TOOL_SCHEMA_BYTES) {
+			throw new Error(`MCP tool ${tool.name} schema exceeds ${MAX_TOOL_SCHEMA_BYTES} bytes`);
+		}
+		if (tool.description && tool.description.length > MAX_TOOL_DESCRIPTION_CHARS) {
+			tool.description = `${tool.description.slice(0, MAX_TOOL_DESCRIPTION_CHARS - 1)}…`;
+		}
+	}
+	return tools;
 }
 
 async function listAllResources(client: Client, timeoutMs: number): Promise<ListedResource[]> {
@@ -200,7 +222,9 @@ function resolvedHttpHeaders(config: Extract<McpServerConfig, { transport: "http
 function createTransport(config: McpServerConfig, cwd: string, runtime: McpRuntime): Transport {
 	if (config.transport === "http") {
 		return new StreamableHTTPClientTransport(new URL(config.url), {
-			requestInit: { headers: resolvedHttpHeaders(config) },
+			// Never forward configured credentials through an HTTP redirect. Node's
+			// fetch can preserve custom auth headers across origin/scheme changes.
+			requestInit: { headers: resolvedHttpHeaders(config), redirect: "error" },
 		});
 	}
 	const transport = new StdioClientTransport({
@@ -358,7 +382,9 @@ export default function mcpExtension(pi: ExtensionAPI): void {
 		} catch (error) {
 			runtime.status = "failed";
 			addDiagnostic(runtime, errorMessage(error));
-			if (runtime.stderrTail?.trim()) addDiagnostic(runtime, runtime.stderrTail);
+			if (runtime.stderrTail?.trim()) {
+				addDiagnostic(runtime, "Server stderr was suppressed because it may contain credentials.");
+			}
 			await client.close().catch(() => {});
 			runtime.client = undefined;
 		}

@@ -21,9 +21,43 @@ test("legacy stdio configuration remains supported", () => {
 	assert.equal(authStatusForConfig(server!), "unsupported");
 });
 
+test("stdio commands and environment names are normalized and validated", () => {
+	const [server] = parseMcpServers([
+		{ name: "local", command: "  npx  ", envVars: [" TOKEN "] },
+	]);
+	assert.equal(server?.transport === "stdio" ? server.command : undefined, "npx");
+	assert.deepEqual(server?.transport === "stdio" ? server.envVars : undefined, ["TOKEN"]);
+	assert.throws(
+		() => parseMcpServers([{ name: "bad", command: "npx", envVars: ["BAD-NAME"] }]),
+		/valid environment variable name/,
+	);
+	assert.throws(
+		() => parseMcpServers([{ name: "bad", command: "npx", env: { "BAD=NAME": "value" } }]),
+		/valid environment variable name/,
+	);
+});
+
+test("credentialed HTTP requires TLS except on loopback", () => {
+	assert.throws(
+		() => parseMcpServers([
+			{ name: "remote", transport: "http", url: "http://example.com/mcp", bearerTokenEnvVar: "MCP_TOKEN" },
+		]),
+		/must use https/,
+	);
+	assert.doesNotThrow(() => parseMcpServers([
+		{ name: "local", transport: "http", url: "http://127.0.0.1:3000/mcp", bearerTokenEnvVar: "MCP_TOKEN" },
+	]));
+	assert.throws(
+		() => parseMcpServers([
+			{ name: "embedded", transport: "http", url: "https://user:pass@example.com/mcp" },
+		]),
+		/must not embed credentials/,
+	);
+});
+
 test("HTTP configuration resolves auth status without exposing token values", () => {
 	const [server] = parseMcpServers([
-		{ name: "remote", transport: "http", url: "https://user:pass@example.com/mcp?secret=yes", bearerTokenEnvVar: "MCP_TOKEN" },
+		{ name: "remote", transport: "http", url: "https://example.com/mcp?secret=yes", bearerTokenEnvVar: "MCP_TOKEN" },
 	]);
 	assert.equal(authStatusForConfig(server!, {}), "notLoggedIn");
 	assert.equal(authStatusForConfig(server!, { MCP_TOKEN: "secret" }), "bearerToken");

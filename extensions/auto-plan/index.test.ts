@@ -9,6 +9,7 @@ import autoPlanMode, {
   ClipboardImageMarkers,
   addInputArrow,
   createInterruptHandler,
+  formatAdvisorReviewMessage,
   formatAgentInstructions,
   hasSensitiveOrExternalPath,
   prepareReviewAction,
@@ -119,6 +120,20 @@ test("review payloads are complete or fail closed", () => {
     input: { path: "too-large.txt", content: "x".repeat(60_000) },
   });
   assert.match(blocked.oversizedReason ?? "", /too large to review safely/);
+});
+
+test("advisor message preserves a reviewable near-limit payload", () => {
+  const content = `head-${"x".repeat(20_000)}-security-critical-middle-${"y".repeat(20_000)}-tail`;
+  const message = formatAdvisorReviewMessage({
+    cwd: "/repo",
+    recentUserRequest: "Update the file",
+    reviewPayload: { path: "large.txt", content },
+    toolDescription: "Write a file",
+    toolName: "write",
+  });
+  assert.match(message, /security-critical-middle/);
+  assert.match(message, /-tail"\s*\}$/);
+  assert.doesNotMatch(message, /truncated/);
 });
 
 test("tool-name overrides are not trusted as read-only", () => {

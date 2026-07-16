@@ -1,5 +1,7 @@
+import { basename } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { loadChangedFiles, showChangedFiles } from "./src/changed-files-view.ts";
+import { loadChangedFiles } from "./src/changed-files-view.ts";
+import { openDiffHtml, writeDiffHtml } from "./src/html-diff.ts";
 import {
   createRuntime,
   runEffect,
@@ -11,16 +13,8 @@ export default function diffBrowser(pi: ExtensionAPI) {
   const getRuntime = () => (runtime ??= createRuntime());
 
   pi.registerCommand("diff", {
-    description: "Browse local changed files and their diffs",
+    description: "Open local changes as a polished HTML diff",
     handler: async (_args, ctx) => {
-      if (ctx.mode !== "tui") {
-        ctx.ui.notify(
-          "The local diff browser requires the interactive TUI",
-          "warning",
-        );
-        return;
-      }
-
       const files = await runEffect(getRuntime(), loadChangedFiles(ctx.cwd), {
         signal: ctx.signal,
         interruptMessage: "Loading local changes was cancelled.",
@@ -34,7 +28,21 @@ export default function diffBrowser(pi: ExtensionAPI) {
         return;
       }
 
-      await showChangedFiles(ctx, files);
+      try {
+        const filePath = await writeDiffHtml(files, {
+          projectName: basename(ctx.cwd) || "Working tree",
+        });
+        const opened = await openDiffHtml(filePath);
+        ctx.ui.notify(
+          opened ? `Opened HTML diff: ${filePath}` : `HTML diff saved: ${filePath}`,
+          opened ? "info" : "warning",
+        );
+      } catch (error) {
+        ctx.ui.notify(
+          `Could not create HTML diff: ${error instanceof Error ? error.message : String(error)}`,
+          "error",
+        );
+      }
     },
   });
 

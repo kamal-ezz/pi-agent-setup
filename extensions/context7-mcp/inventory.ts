@@ -97,6 +97,23 @@ function optionalString(value: unknown, label: string): string | undefined {
 	return value;
 }
 
+function environmentName(value: string, label: string): string {
+	const normalized = value.trim();
+	if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(normalized)) {
+		throw new Error(`${label} must be a valid environment variable name`);
+	}
+	return normalized;
+}
+
+function isLoopbackHost(hostname: string): boolean {
+	const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+	return (
+		normalized === "localhost" ||
+		normalized === "::1" ||
+		/^127(?:\.\d{1,3}){3}$/.test(normalized)
+	);
+}
+
 export function parseMcpServers(value: unknown): McpServerConfig[] {
 	if (!Array.isArray(value)) throw new Error("the root value must be an array");
 	const servers: McpServerConfig[] = [];
@@ -135,13 +152,24 @@ export function parseMcpServers(value: unknown): McpServerConfig[] {
 			) {
 				throw new Error(`${label}.envVars must be an array of non-empty strings`);
 			}
+			const rawEnvironment = stringRecord(item.env, `${label}.env`);
+			const environment = rawEnvironment
+				? Object.fromEntries(
+					Object.entries(rawEnvironment).map(([name, envValue]) => [
+						environmentName(name, `${label}.env key`),
+						envValue,
+					]),
+				)
+				: undefined;
 			servers.push({
 				...base,
 				transport: "stdio",
-				command: item.command,
+				command: item.command.trim(),
 				args: (item.args as string[] | undefined) ?? [],
-				env: stringRecord(item.env, `${label}.env`),
-				envVars: item.envVars ? [...new Set(item.envVars as string[])] : undefined,
+				env: environment,
+				envVars: item.envVars
+					? [...new Set((item.envVars as string[]).map((name, envIndex) => environmentName(name, `${label}.envVars[${envIndex}]`)))]
+					: undefined,
 				cwd: optionalString(item.cwd, `${label}.cwd`),
 			});
 			continue;
@@ -155,13 +183,39 @@ export function parseMcpServers(value: unknown): McpServerConfig[] {
 				throw new Error(`${label}.url is not a valid URL`);
 			}
 			if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error(`${label}.url must use http or https`);
+			if (url.username || url.password) {
+				throw new Error(`${label}.url must not embed credentials; configure an authorization header instead`);
+			}
+			const headers = stringRecord(item.headers, `${label}.headers`);
+			const rawEnvHeaders = stringRecord(item.envHeaders, `${label}.envHeaders`);
+			const envHeaders = rawEnvHeaders
+				? Object.fromEntries(
+					Object.entries(rawEnvHeaders).map(([header, envName]) => [
+						header,
+						environmentName(envName, `${label}.envHeaders.${header}`),
+					]),
+				)
+				: undefined;
+			if (item.bearerTokenEnvVar !== undefined && typeof item.bearerTokenEnvVar !== "string") {
+				throw new Error(`${label}.bearerTokenEnvVar must be a string`);
+			}
+			const bearerTokenEnvVar = item.bearerTokenEnvVar === undefined
+				? undefined
+				: environmentName(item.bearerTokenEnvVar as string, `${label}.bearerTokenEnvVar`);
+			const hasCredentialHeaders =
+				!!bearerTokenEnvVar ||
+				Object.keys(headers ?? {}).length > 0 ||
+				Object.keys(envHeaders ?? {}).length > 0;
+			if (url.protocol === "http:" && hasCredentialHeaders && !isLoopbackHost(url.hostname)) {
+				throw new Error(`${label}.url must use https when credential headers are configured (plain http is allowed only for loopback hosts)`);
+			}
 			servers.push({
 				...base,
 				transport: "http",
-				url: item.url,
-				headers: stringRecord(item.headers, `${label}.headers`),
-				envHeaders: stringRecord(item.envHeaders, `${label}.envHeaders`),
-				bearerTokenEnvVar: optionalString(item.bearerTokenEnvVar, `${label}.bearerTokenEnvVar`),
+				url: url.toString(),
+				headers,
+				envHeaders,
+				bearerTokenEnvVar,
 			});
 			continue;
 		}

@@ -40,6 +40,10 @@ export const MAX_TRACKED = 32;
 const MAX_SETTLED_HISTORY = MAX_TRACKED * 4;
 /** In-memory retained cap per stream; the spill file keeps the full capture. */
 export const RETAINED_PER_STREAM = 2 * 1024 * 1024;
+/** Bound each full-log spill so a firehose process cannot fill the disk. */
+export const SPILL_PER_STREAM_MAX_BYTES = 16 * 1024 * 1024;
+/** Aggregate safety bound for all full-log files in one Pi session. */
+export const SPILL_SESSION_MAX_BYTES = 256 * 1024 * 1024;
 const STOP_TIMEOUT_MS = 5_000;
 /** SIGTERM is normally enough; the second deadline covers a wedged process. */
 const FORCE_KILL_AFTER_MS = 2_000;
@@ -74,6 +78,14 @@ interface MutableSnapshot extends TerminalSnapshot {
   errorText?: string;
 }
 
+interface SpillHandle {
+  file: fs.WriteStream;
+  spillPath: string;
+  write(chunk: string): boolean;
+  resumeOnDrain(resume: () => void): void;
+  remove(): void;
+}
+
 interface Entry {
   snapshot: MutableSnapshot;
   child: ChildProcess;
@@ -81,6 +93,7 @@ interface Entry {
   stdoutBuf: OutputBuffer;
   stderrBuf: OutputBuffer;
   spillStreams: fs.WriteStream[];
+  spillHandles: SpillHandle[];
   /** Set in the same synchronous effect that sends SIGTERM so a natural exit
    * before signaling keeps its truthful status. */
   killSignaled: boolean;
@@ -94,9 +107,9 @@ interface Entry {
   stdioClosed: boolean;
   /** A settle-after-spill-flush is in flight; don't start a second one. */
   settling: boolean;
-  /** The shell exited without stdio closing; a bounded scope close is queued
-   * to reap descendants that still hold the inherited pipes open. */
-  exitCleanupStarted: boolean;
+  /** The shell exited without stdio closing; this cancellable grace timer
+   * reaps descendants that keep inherited pipes open. */
+  exitCleanupTimer?: ReturnType<typeof setTimeout>;
   /** Completed exactly once when the entry settles. Kill callers and the scope
    * finalizer can all await the same result without missing a notification. */
   settled: Deferred.Deferred<void>;
@@ -291,6 +304,7 @@ const makeManager = Effect.gen(function* () {
   let reserved = 0;
   let disposed = false;
   let spillDir: string | undefined | null;
+  let sessionSpillBytes = 0;
   let onSettled:
     ((snap: TerminalSnapshot, consumed: boolean) => void) | undefined;
 
@@ -345,6 +359,7 @@ const makeManager = Effect.gen(function* () {
     for (const entry of candidates) {
       if (entries.size <= MAX_TRACKED) break;
       entries.delete(entry.snapshot.id);
+      for (const spill of entry.spillHandles) spill.remove();
       runCleanup(closeEntryScope(entry));
     }
   };
@@ -432,23 +447,26 @@ const makeManager = Effect.gen(function* () {
     );
   };
 
+  const cancelExitCleanup = (entry: Entry) => {
+    if (entry.exitCleanupTimer !== undefined) {
+      clearTimeout(entry.exitCleanupTimer);
+      entry.exitCleanupTimer = undefined;
+    }
+  };
+
   const scheduleExitCleanup = (entry: Entry) => {
-    if (entry.exitCleanupStarted) return;
-    entry.exitCleanupStarted = true;
-    runCleanup(
-      Effect.sleep(SETTLE_GRACE_MS).pipe(
-        Effect.andThen(
-          Effect.suspend(() =>
-            entry.snapshot.status === "running" && !entry.stdioClosed
-              ? closeEntryScope(entry).pipe(
-                  Effect.timeout(STOP_TIMEOUT_MS),
-                  Effect.ignore,
-                )
-              : Effect.void,
+    if (entry.exitCleanupTimer !== undefined) return;
+    entry.exitCleanupTimer = setTimeout(() => {
+      entry.exitCleanupTimer = undefined;
+      if (entry.snapshot.status === "running" && !entry.stdioClosed) {
+        runCleanup(
+          closeEntryScope(entry).pipe(
+            Effect.timeout(STOP_TIMEOUT_MS),
+            Effect.ignore,
           ),
-        ),
-      ),
-    );
+        );
+      }
+    }, SETTLE_GRACE_MS);
   };
 
   const resolveSpillDir = () => {
@@ -469,7 +487,7 @@ const makeManager = Effect.gen(function* () {
     entry: () => Entry | undefined,
     id: string,
     stream: "stdout" | "stderr",
-  ) => {
+  ): SpillHandle | undefined => {
     const dir = resolveSpillDir();
     if (!dir) return undefined;
     const spillPath = path.join(dir, `${id}.${stream}.log`);
@@ -479,25 +497,88 @@ const makeManager = Effect.gen(function* () {
         mode: 0o600,
       });
       let broken = false;
+      let capped = false;
+      let removed = false;
+      let writtenBytes = 0;
+      const markUnavailable = (message: string) => {
+        const current = entry();
+        if (!current) return;
+        const buf = stream === "stdout" ? current.stdoutBuf : current.stderrBuf;
+        buf.spillPath = undefined;
+        current.snapshot.errorText ??= bounded(message);
+      };
+      const remove = () => {
+        if (removed) return;
+        removed = true;
+        capped = true;
+        const accountedBytes = writtenBytes;
+        writtenBytes = 0;
+        const unlink = () => {
+          fs.rm(spillPath, { force: true }, (error) => {
+            // Keep failed deletions charged against the session quota; the
+            // manager-level tmpdir cleanup will retry them during teardown.
+            if (!error) {
+              sessionSpillBytes = Math.max(0, sessionSpillBytes - accountedBytes);
+            }
+          });
+        };
+        if (file.closed) unlink();
+        else if (broken) {
+          file.once("close", unlink);
+          file.destroy();
+        } else if (file.writableEnded) file.once("close", unlink);
+        else {
+          file.once("close", unlink);
+          file.end();
+        }
+      };
       file.on("error", (error) => {
         broken = true;
-        const current = entry();
-        if (current) {
-          const buf =
-            stream === "stdout" ? current.stdoutBuf : current.stderrBuf;
-          buf.spillPath = undefined;
-          current.snapshot.errorText ??= bounded(
-            `Full-log spill to ${spillPath} failed: ${boundedError(error)}`,
-          );
-        }
+        markUnavailable(
+          `Full-log spill to ${spillPath} failed: ${boundedError(error)}`,
+        );
+        remove();
       });
       return {
         spillPath,
         file,
+        remove,
         write: (chunk: string) => {
           // writableEnded guard: late 'data' after the settle flush must not
           // error the ended stream (and falsely report the spill as broken).
-          if (!broken && !file.writableEnded) file.write(chunk);
+          if (broken || capped || file.writableEnded) return true;
+          const bytes = Buffer.byteLength(chunk, "utf8");
+          const exceedsStream = writtenBytes + bytes > SPILL_PER_STREAM_MAX_BYTES;
+          const exceedsSession = sessionSpillBytes + bytes > SPILL_SESSION_MAX_BYTES;
+          if (exceedsStream || exceedsSession) {
+            capped = true;
+            markUnavailable(
+              exceedsStream
+                ? `Full-log spill stopped at the ${SPILL_PER_STREAM_MAX_BYTES / (1024 * 1024)} MiB per-stream safety limit`
+                : `Full-log spill stopped at the ${SPILL_SESSION_MAX_BYTES / (1024 * 1024)} MiB session safety limit`,
+            );
+            remove();
+            return true;
+          }
+          writtenBytes += bytes;
+          sessionSpillBytes += bytes;
+          return file.write(chunk);
+        },
+        resumeOnDrain: (resume: () => void) => {
+          if (broken || capped || file.writableEnded) {
+            queueMicrotask(resume);
+            return;
+          }
+          let resumed = false;
+          const done = () => {
+            if (resumed) return;
+            resumed = true;
+            file.off("drain", done);
+            file.off("error", done);
+            resume();
+          };
+          file.once("drain", done);
+          file.once("error", done);
         },
       };
     } catch {
@@ -584,12 +665,14 @@ const makeManager = Effect.gen(function* () {
           spillStreams: [stdoutSpill?.file, stderrSpill?.file].filter(
             (file): file is fs.WriteStream => file !== undefined,
           ),
+          spillHandles: [stdoutSpill, stderrSpill].filter(
+            (spill): spill is SpillHandle => spill !== undefined,
+          ),
           killSignaled: false,
           processErrored: false,
           exited: false,
           stdioClosed: false,
           settling: false,
-          exitCleanupStarted: false,
           settled,
         };
 
@@ -598,12 +681,18 @@ const makeManager = Effect.gen(function* () {
         // chunk boundaries.
         child.stdout?.setEncoding("utf8");
         child.stdout?.on("data", (chunk: string) => {
-          stdoutBuf.push(chunk);
+          if (!stdoutBuf.push(chunk)) {
+            child.stdout?.pause();
+            stdoutSpill?.resumeOnDrain(() => child.stdout?.resume());
+          }
           notify(id);
         });
         child.stderr?.setEncoding("utf8");
         child.stderr?.on("data", (chunk: string) => {
-          stderrBuf.push(chunk);
+          if (!stderrBuf.push(chunk)) {
+            child.stderr?.pause();
+            stderrSpill?.resumeOnDrain(() => child.stderr?.resume());
+          }
           notify(id);
         });
         // Spawn failures (ENOENT etc.) arrive via 'error', not a throw. Node
@@ -629,6 +718,7 @@ const makeManager = Effect.gen(function* () {
         child.once("close", (code, signal) => {
           entry.exited = true;
           entry.stdioClosed = true;
+          cancelExitCleanup(entry);
           // Only trust close's code/signal when 'exit' never fired (a spawn
           // 'error' close reports the errno, e.g. -2, as its code).
           if (!entry.processErrored) {
@@ -643,6 +733,7 @@ const makeManager = Effect.gen(function* () {
         yield* Scope.provide(
           Effect.addFinalizer(() =>
             Effect.gen(function* () {
+              cancelExitCleanup(entry);
               // Only claim "killed" when we are actually about to signal a
               // live process; a natural exit that already happened (still
               // waiting on 'close') keeps its truthful done/failed status.

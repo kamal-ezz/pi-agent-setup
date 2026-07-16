@@ -72,6 +72,51 @@ async function withManager(
   }
 }
 
+test("aborting spawn closes its pending scope and leaves no tracked entry", async () => {
+  let scopeClosed = 0;
+  const stub = makeStubBackend({
+    backend: "claude",
+    defaultModelLabel: "claude/sonnet",
+    contextWindow: 200_000,
+    toolName: "Bash",
+    cadenceMs: 20,
+  });
+  const slowBackend: SubagentBackend = {
+    ...stub,
+    spawn: (spawnTask) =>
+      Effect.gen(function* () {
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            scopeClosed += 1;
+          }),
+        );
+        yield* Effect.sleep(10_000);
+        return yield* stub.spawn(spawnTask);
+      }),
+  };
+  const registry = Layer.succeed(
+    BackendRegistry,
+    new Map<BackendName, SubagentBackend>([["claude", slowBackend]]),
+  );
+  const runtime = ManagedRuntime.make(
+    SubagentManagerLive.pipe(Layer.provide(registry)),
+  );
+  try {
+    const manager = await runtime.runPromise(SubagentManager);
+    const controller = new AbortController();
+    const spawning = runTool(runtime, manager.spawn("claude", task("slow")), {
+      signal: controller.signal,
+      interruptMessage: "spawn aborted",
+    });
+    setTimeout(() => controller.abort(), 20);
+    await assert.rejects(spawning, /spawn aborted/);
+    assert.equal(scopeClosed, 1);
+    assert.deepEqual(manager.view.list(), []);
+  } finally {
+    await runtime.dispose();
+  }
+});
+
 test("stub subagent completes and delivers a final result", async () => {
   await withManager(async (manager, runtime) => {
     const settled: Array<{ id: string; consumed: boolean }> = [];

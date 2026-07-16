@@ -65,6 +65,7 @@ import {
   SUBAGENT_WAIT_TOOL_DESCRIPTION,
 } from "./src/prompt.ts";
 import {
+  assertHarnessProjectTrust,
   GPT_SUBAGENT_MODELS,
   PUBLIC_SUBAGENT_HARNESSES,
   modelHintForHarness,
@@ -260,7 +261,7 @@ export default function (pi: ExtensionAPI) {
         }),
       ),
     }),
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const manager = await getManager();
       const harness = params.harness;
 
@@ -274,6 +275,12 @@ export default function (pi: ExtensionAPI) {
         normalizeSubagentModel(params.model) ??
         routeSubagentModel(`${title}\n${params.prompt}`);
       const model = modelHintForHarness(harness, routedModel);
+      const projectTrusted = resolveChildProjectTrust({
+        parentCwd: ctx.cwd,
+        childCwd: cwd,
+        parentTrusted: ctx.isProjectTrusted(),
+      });
+      assertHarnessProjectTrust(harness, projectTrusted);
       const snap = await runTool(
         getRuntime(),
         manager.spawn(harness, {
@@ -284,11 +291,7 @@ export default function (pi: ExtensionAPI) {
           reasoningEffort: params.reasoning_effort ?? "medium",
           parent: {
             parentCwd: ctx.cwd,
-            projectTrusted: resolveChildProjectTrust({
-              parentCwd: ctx.cwd,
-              childCwd: cwd,
-              parentTrusted: ctx.isProjectTrusted(),
-            }),
+            projectTrusted,
             inheritedModel: ctx.model
               ? { provider: ctx.model.provider, id: ctx.model.id }
               : undefined,
@@ -296,6 +299,10 @@ export default function (pi: ExtensionAPI) {
             modelRegistry: ctx.modelRegistry,
           },
         }),
+        {
+          signal,
+          interruptMessage: "Subagent spawn aborted.",
+        },
       );
 
       return {
@@ -419,7 +426,7 @@ export default function (pi: ExtensionAPI) {
         description: SUBAGENT_CANCEL_PARAMETER_DESCRIPTIONS.ids,
       }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       const manager = await getManager();
       const ids = [...new Set(params.ids)];
       if (ids.length === 0)
@@ -433,7 +440,10 @@ export default function (pi: ExtensionAPI) {
         );
       }
 
-      const report = await runTool(getRuntime(), manager.cancel(ids));
+      const report = await runTool(getRuntime(), manager.cancel(ids), {
+        signal,
+        interruptMessage: "Subagent cancellation aborted; agents may still be running.",
+      });
 
       const lines = report.map((entry) =>
         entry.cancelled

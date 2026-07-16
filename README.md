@@ -15,13 +15,13 @@ A portable snapshot of the global Pi configuration from `~/.pi/agent`.
 - Unified MCP runtime with live inventory (`/mcp`), guided configuration (`/mcp-setup`), stdio and Streamable HTTP transports, and Context7 enabled
 - Persistent, branch-aware goals with automatic continuation (`/goal`)
 - Background terminals for servers, watchers, and long-running commands (`/ps`)
-- Interactive local changes browser (`/diff`)
+- Self-contained HTML changes review with file filtering, line numbers, theme switching, keyboard navigation, and addition/deletion rails (`/diff`)
 - GPT-5.6 Luna, Terra, and Sol subagents on Pi or Codex with automatic model routing, background execution, and takeover UI (`/subagents`)
 - Frontend design, background terminal, and subagent skills
 
 ## Install
 
-Requirements: Pi, Node.js 20 or newer, npm, and Git. Desktop-notification fallback additionally requires `notify-send`; chime playback uses `canberra-gtk-play` when available.
+Requirements: Pi, Node.js 22.19 or newer, npm, and Git. Desktop-notification fallback additionally requires `notify-send`; chime playback uses `canberra-gtk-play` when available.
 
 Pi-backed subagents work with the installed Pi models. Codex subagents additionally require the Codex CLI to be installed and authenticated.
 
@@ -33,8 +33,8 @@ cd pi-agent-setup
 
 The installer:
 
-1. Copies the managed files to `${PI_AGENT_DIR:-~/.pi/agent}`.
-2. Backs up changed managed files under `~/.pi/agent/backups/`.
+1. Copies managed files to `PI_CODING_AGENT_DIR`, or `~/.pi/agent` when the Pi override is unset.
+2. Backs up changed managed files under the selected agent directory's `backups/` folder.
 3. Installs production dependencies for the MCP, background terminal, diff browser, and subagent extensions with `npm ci`.
 
 Restart Pi after installation. On a new machine, authenticate separately with `/login` inside Pi.

@@ -2,7 +2,7 @@
   {
     "name": "context7",
     "command": "npx",
-    "args": ["-y", "@upstash/context7-mcp"],
+    "args": ["-y", "@upstash/context7-mcp@3.2.3"],
     "enabled": true
   }
 ]
