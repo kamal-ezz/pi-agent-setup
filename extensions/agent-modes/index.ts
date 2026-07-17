@@ -31,6 +31,8 @@ import {
   type AdvisorDecision,
 } from "./policy.ts";
 
+// Persisted/session identifiers retain their legacy names so existing sessions
+// continue restoring modes and filtering injected Plan context correctly.
 const MODE_ENTRY_TYPE = "auto-plan-mode";
 const STATUS_KEY = "auto-plan-mode";
 const ADVISOR_APPROVAL_WIDGET_KEY = "auto-plan-approval";
@@ -48,8 +50,8 @@ const TRUSTED_EXTENSION_TOOL_PATHS: Record<string, string> = {
   bg_list: "extensions/background-terminals/index.ts",
   subagent_check: "extensions/subagents/index.ts",
   subagent_list: "extensions/subagents/index.ts",
-  "mcp_context7_resolve-library-id": "extensions/context7-mcp/index.ts",
-  "mcp_context7_query-docs": "extensions/context7-mcp/index.ts",
+  "mcp_context7_resolve-library-id": "extensions/mcp-runtime/index.ts",
+  "mcp_context7_query-docs": "extensions/mcp-runtime/index.ts",
 };
 
 export const ADVISOR_SYSTEM_PROMPT = `You are a security-focused permission advisor for a coding agent. Review one proposed tool action against the user's current request.
@@ -360,7 +362,7 @@ function canSkipAutoReview(
   return !hasSensitiveOrExternalPath(event, cwd);
 }
 
-export default function autoPlanMode(pi: ExtensionAPI): void {
+export default function agentModes(pi: ExtensionAPI): void {
   let mode: AgentMode = "auto";
   let toolsBeforePlan: string[] | undefined;
   let activeTui: TUI | undefined;

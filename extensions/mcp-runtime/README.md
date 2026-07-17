@@ -1,6 +1,6 @@
-# Unified MCP for Pi
+# MCP Runtime for Pi
 
-Codex-style MCP runtime and inventory command.
+Codex-style unified MCP runtime and inventory command.
 
 ```text
 /mcp          # live server auth and tool inventory

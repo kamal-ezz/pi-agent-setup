@@ -16,7 +16,7 @@ managed_files=(
   extensions/codex-usage.ts
   extensions/effort.ts
   extensions/emoji-responses.ts
-  extensions/hide-token-cost.ts
+  extensions/status-footer.ts
   extensions/turn-notifications.ts
   skills/frontend-design/SKILL.md
   skills/frontend-design/LICENSE.txt
@@ -24,12 +24,12 @@ managed_files=(
 )
 
 managed_directories=(
-  extensions/auto-plan
+  extensions/agent-modes
   extensions/background-terminals
   extensions/btw
-  extensions/context7-mcp
-  extensions/diff
+  extensions/diff-browser
   extensions/goal
+  extensions/mcp-runtime
   extensions/subagents
   skills/background-terminals
   skills/mermaid-diagram

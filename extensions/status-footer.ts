@@ -26,7 +26,7 @@ async function repositoryName(pi: ExtensionAPI, cwd: string): Promise<string> {
 	return basename(cwd) || cwd;
 }
 
-export default function (pi: ExtensionAPI) {
+export default function statusFooter(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 

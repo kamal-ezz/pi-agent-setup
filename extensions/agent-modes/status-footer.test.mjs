@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import footerExtension from "../hide-token-cost.ts";
+import statusFooterExtension from "../status-footer.ts";
 
 test("footer renders repository and activity as a compact two-row layout", async () => {
   let sessionStart;
@@ -28,7 +28,7 @@ test("footer renders repository and activity as a compact two-row layout", async
     },
   };
 
-  footerExtension(pi);
+  statusFooterExtension(pi);
   await sessionStart({}, ctx);
   assert.ok(footerFactory);
 

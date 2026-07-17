@@ -278,7 +278,7 @@ function snapshotFor(runtime: McpRuntime): McpServerSnapshot {
 	};
 }
 
-export default function mcpExtension(pi: ExtensionAPI): void {
+export default function mcpRuntime(pi: ExtensionAPI): void {
 	const runtimes = new Map<string, McpRuntime>();
 	const registeredToolNames = new Set<string>();
 	let runtimeActive = false;

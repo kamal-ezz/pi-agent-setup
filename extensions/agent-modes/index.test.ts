@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import autoPlanMode, {
+import agentModes, {
   ADVISOR_SYSTEM_PROMPT,
   ClipboardImageMarkers,
   actionPreview,
@@ -201,7 +201,7 @@ test("tool-name overrides are not trusted as read-only", () => {
 });
 
 test("sensitive and symlinked external reads require review", () => {
-  const root = mkdtempSync(join(tmpdir(), "auto-plan-test-"));
+  const root = mkdtempSync(join(tmpdir(), "agent-modes-test-"));
   try {
     const project = join(root, "project");
     const outside = join(root, "outside.txt");
@@ -356,7 +356,7 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
     },
   } as any;
 
-  autoPlanMode(pi);
+  agentModes(pi);
   const shortcut = shortcuts.get("shift+tab");
   assert.ok(shortcut);
   assert.ok(shortcuts.has("ctrl+c"));

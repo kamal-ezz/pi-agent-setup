@@ -61,15 +61,16 @@ git diff
 ├── themes/
 │   └── github-dark-default.json
 ├── extensions/
-│   ├── auto-plan/
+│   ├── agent-modes/
 │   ├── background-terminals/
 │   ├── btw/
 │   ├── codex-usage.ts
-│   ├── context7-mcp/
-│   ├── diff/
+│   ├── diff-browser/
 │   ├── effort.ts
+│   ├── emoji-responses.ts
 │   ├── goal/
-│   ├── hide-token-cost.ts
+│   ├── mcp-runtime/
+│   ├── status-footer.ts
 │   ├── subagents/
 │   └── turn-notifications.ts
 └── skills/

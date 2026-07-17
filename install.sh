@@ -19,7 +19,7 @@ managed_files=(
   extensions/codex-usage.ts
   extensions/effort.ts
   extensions/emoji-responses.ts
-  extensions/hide-token-cost.ts
+  extensions/status-footer.ts
   extensions/turn-notifications.ts
   skills/frontend-design/SKILL.md
   skills/frontend-design/LICENSE.txt
@@ -28,17 +28,26 @@ managed_files=(
 )
 
 managed_directories=(
-  extensions/auto-plan
+  extensions/agent-modes
   extensions/background-terminals
   extensions/btw
-  extensions/context7-mcp
-  extensions/diff
+  extensions/diff-browser
   extensions/goal
+  extensions/mcp-runtime
   extensions/subagents
   skills/background-terminals
   skills/mermaid-diagram
   skills/subagents
   themes
+)
+
+# Paths managed by older snapshots. Move them aside before copying the renamed
+# extensions so Pi cannot auto-discover both the old and new entry points.
+legacy_managed_paths=(
+  extensions/auto-plan
+  extensions/context7-mcp
+  extensions/diff
+  extensions/hide-token-cost.ts
 )
 
 # Honor the repository ignore rules so installed dependencies and other
@@ -54,6 +63,15 @@ done < <(
 
 mkdir -p "$agent_dir"
 
+for relative_path in "${legacy_managed_paths[@]}"; do
+  target_path="${agent_dir}/${relative_path}"
+  if [[ -e "$target_path" || -L "$target_path" ]]; then
+    mkdir -p "${backup_dir}/$(dirname -- "$relative_path")"
+    mv "$target_path" "${backup_dir}/${relative_path}"
+    backed_up=true
+  fi
+done
+
 for relative_path in "${managed_files[@]}"; do
   source_path="${repo_dir}/${relative_path}"
   target_path="${agent_dir}/${relative_path}"
@@ -68,8 +86,8 @@ for relative_path in "${managed_files[@]}"; do
   cp -p "$source_path" "$target_path"
 done
 
-npm ci --omit=dev --prefix "${agent_dir}/extensions/context7-mcp"
-for extension in background-terminals diff subagents; do
+npm ci --omit=dev --prefix "${agent_dir}/extensions/mcp-runtime"
+for extension in background-terminals diff-browser subagents; do
   npm ci --omit=dev --ignore-scripts --prefix "${agent_dir}/extensions/${extension}"
 done
 
