@@ -270,6 +270,7 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
   const entries: any[] = [];
   let branchEntries: any[] = [];
   const statuses: string[] = [];
+  const foregroundColors: string[] = [];
   const notifications: string[] = [];
   const desktopNotifications: string[][] = [];
   const approvalWidgets: unknown[] = [];
@@ -335,7 +336,12 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
       return { cancelled: false };
     },
     ui: {
-      theme: { fg: (_color: string, value: string) => value },
+      theme: {
+        fg: (color: string, value: string) => {
+          foregroundColors.push(color);
+          return value;
+        },
+      },
       setStatus: (_key: string, value: string) => statuses.push(value),
       notify: (message: string) => notifications.push(message),
       confirm: async (title: string) => {
@@ -388,6 +394,7 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
 
   await handlers.get("session_start")?.({ type: "session_start" }, ctx);
   assert.equal(statuses.at(-1), "◆ auto");
+  assert.equal(foregroundColors.at(-1), "accent");
   assert.deepEqual(activeTools, ["read", "bash", "edit", "write", "bg_status", "subagent_spawn"]);
 
   await handlers.get("agent_start")?.({}, ctx);
@@ -408,6 +415,7 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
 
   await shortcut?.handler(ctx);
   assert.equal(statuses.at(-1), "⏸ plan");
+  assert.equal(foregroundColors.at(-1), "warning");
   assert.deepEqual(activeTools, ["read", "bash", "bg_status"]);
   assert.match(notifications.at(-1) ?? "", /Plan mode/);
 
@@ -441,6 +449,7 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
 
   await shortcut?.handler(ctx);
   assert.equal(statuses.at(-1), "⚠ bypass-all");
+  assert.equal(foregroundColors.at(-1), "error");
   assert.deepEqual(activeTools, ["read", "bash", "edit", "write", "bg_status", "subagent_spawn"]);
   assert.match(notifications.at(-1) ?? "", /Bypass-all mode/);
   assert.match(confirmPrompts.at(-1) ?? "", /bypass-all/);
@@ -453,6 +462,7 @@ test("Shift+Tab cycles Auto, Plan, and bypass-all modes", async () => {
 
   await shortcut?.handler(ctx);
   assert.equal(statuses.at(-1), "◆ auto");
+  assert.equal(foregroundColors.at(-1), "accent");
 
   const filteredContext = await handlers.get("context")?.(
     {

@@ -41,6 +41,11 @@ const REVIEW_MAX_TOKENS = 300;
 const REVIEW_INPUT_LIMIT = 50_000;
 const DOUBLE_INTERRUPT_WINDOW_MS = 750;
 const MODE_ORDER: AgentMode[] = ["auto", "plan", "bypass-all"];
+const MODE_COLORS = {
+  auto: "accent",
+  plan: "warning",
+  "bypass-all": "error",
+} as const;
 const TITLE_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const TITLE_SPINNER_INTERVAL_MS = 100;
 
@@ -425,8 +430,7 @@ export default function agentModes(pi: ExtensionAPI): void {
         : mode === "plan"
           ? "⏸ plan"
           : "⚠ bypass-all";
-    const color =
-      mode === "auto" ? "success" : mode === "plan" ? "warning" : "error";
+    const color = MODE_COLORS[mode];
     ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg(color, label));
     activeTui?.requestRender();
   }
@@ -761,8 +765,7 @@ export default function agentModes(pi: ExtensionAPI): void {
       }
 
       override render(width: number): string[] {
-        const color =
-          mode === "auto" ? "success" : mode === "plan" ? "warning" : "error";
+        const color = MODE_COLORS[mode];
         this.borderColor = (text: string) => ctx.ui.theme.fg(color, text);
         return addInputArrow(
           super.render(width),
