@@ -7,6 +7,7 @@ Snapshot of `~/.pi/agent`.
 - `settings.json` — `github-dark-default`, `openai/gpt-6.1-sol`, `low`; reasoning hidden by default (`Ctrl+T` to reveal)
 - `extensions/btw` — `/btw` side questions
 - `extensions/status-footer.ts` — footer
+- `extensions/ctrl-c.ts` — `Ctrl+C` clears a non-empty prompt; exits Pi when the prompt is empty (aborting active work)
 - `extensions/quiet-shell.ts` — hide agent-run shell output until expanded with `Ctrl+O`, without placeholder labels; commands and error highlighting remain visible; suppress the hidden-reasoning label
 - `themes/github-dark-default.json`, `keybindings.json`, `package.json`, `tsconfig.json`
 
@@ -42,5 +43,6 @@ git diff
 ├── extensions/btw
 ├── extensions/status-footer.ts
 ├── extensions/quiet-shell.ts
+├── extensions/ctrl-c.ts
 └── sync.sh
 ```
