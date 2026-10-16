@@ -50,7 +50,6 @@ done
 managed_files=(
   settings.json
   keybindings.json
-  extensions/effort.ts
   extensions/status-footer.ts
   package.json
   tsconfig.json
@@ -73,6 +72,7 @@ legacy_managed_paths=(
   extensions/codex-usage.ts
   extensions/diff-browser
   extensions/emoji-responses.ts
+  extensions/effort.ts
   extensions/goal
   extensions/mcp-runtime
   extensions/subagents
@@ -251,7 +251,7 @@ install_extension_deps() {
   fi
 }
 
-# No deps to install for the current trimmed set (btw/effort/status-footer are
+# No deps to install for the current trimmed set (btw/status-footer are
 # single-file, no package.json). Keep the block for extensibility.
 for ext in ""; do
   [[ -z "$ext" ]] && continue

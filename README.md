@@ -6,11 +6,10 @@ Snapshot of `~/.pi/agent`.
 
 - `settings.json` — `github-dark-default`, `openai-codex/gpt-5.6-sol`, `high`
 - `extensions/btw` — `/btw` side questions
-- `extensions/effort.ts` — `/effort`
 - `extensions/status-footer.ts` — footer
 - `themes/github-dark-default.json`, `keybindings.json`, `package.json`, `tsconfig.json`
 
-Removed: `agent-modes`, `background-terminals`, `diff-browser`, `goal`, `mcp-runtime`, `subagents`, `codex-usage`, `emoji-responses`, `turn-notifications`, `mcp.json`, `skills/*`.
+Removed: `effort`, `agent-modes`, `background-terminals`, `diff-browser`, `goal`, `mcp-runtime`, `subagents`, `codex-usage`, `emoji-responses`, `turn-notifications`, `mcp.json`, `skills/*`.
 
 ## Install
 
@@ -40,7 +39,6 @@ git diff
 ├── settings.json / keybindings.json / package.json / tsconfig.json
 ├── themes/github-dark-default.json
 ├── extensions/btw
-├── extensions/effort.ts
 ├── extensions/status-footer.ts
 └── sync.sh
 ```
