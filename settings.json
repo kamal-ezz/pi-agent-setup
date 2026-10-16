@@ -4,6 +4,7 @@
   "defaultProvider": "openai",
   "defaultModel": "gpt-6.1-sol",
   "defaultThinkingLevel": "low",
+  "hideThinkingBlock": true,
   "terminal": {
     "showImages": false,
     "clearOnShrink": false
