@@ -51,6 +51,7 @@ managed_files=(
   settings.json
   keybindings.json
   extensions/status-footer.ts
+  extensions/quiet-shell.ts
   package.json
   tsconfig.json
 )

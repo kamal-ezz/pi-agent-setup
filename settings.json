@@ -1,9 +1,9 @@
 {
   "lastChangelogVersion": "0.80.7",
   "theme": "github-dark-default",
-  "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-5.6-sol",
-  "defaultThinkingLevel": "high",
+  "defaultProvider": "openai",
+  "defaultModel": "gpt-6.1-sol",
+  "defaultThinkingLevel": "low",
   "terminal": {
     "showImages": false,
     "clearOnShrink": false

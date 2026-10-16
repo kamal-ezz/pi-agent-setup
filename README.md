@@ -4,9 +4,10 @@ Snapshot of `~/.pi/agent`.
 
 ## Contains
 
-- `settings.json` — `github-dark-default`, `openai-codex/gpt-5.6-sol`, `high`
+- `settings.json` — `github-dark-default`, `openai/gpt-6.1-sol`, `low`
 - `extensions/btw` — `/btw` side questions
 - `extensions/status-footer.ts` — footer
+- `extensions/quiet-shell.ts` — hide agent-run shell output until expanded with `Ctrl+O` (commands and failure indicators remain visible)
 - `themes/github-dark-default.json`, `keybindings.json`, `package.json`, `tsconfig.json`
 
 Removed: `effort`, `agent-modes`, `background-terminals`, `diff-browser`, `goal`, `mcp-runtime`, `subagents`, `codex-usage`, `emoji-responses`, `turn-notifications`, `mcp.json`, `skills/*`.
@@ -40,5 +41,6 @@ git diff
 ├── themes/github-dark-default.json
 ├── extensions/btw
 ├── extensions/status-footer.ts
+├── extensions/quiet-shell.ts
 └── sync.sh
 ```

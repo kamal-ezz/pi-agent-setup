@@ -2,8 +2,6 @@ import { basename } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
-const GAUGE_CELLS = 10;
-
 function columns(left: string, right: string, width: number, ellipsis: string): string {
 	if (!right) return truncateToWidth(left, width, ellipsis);
 	if (visibleWidth(left) + visibleWidth(right) + 2 <= width) {
@@ -61,29 +59,15 @@ export default function statusFooter(pi: ExtensionAPI) {
 					) ?? projectText;
 					const header = columns(location, modelText, width, ellipsis);
 
-					const context = ctx.getContextUsage();
-					const percent = context?.percent;
-					const roundedPercent = percent == null ? "?" : String(Math.round(percent));
-					const filledCells = percent == null ? 0 : Math.max(0, Math.min(GAUGE_CELLS, Math.round(percent / 10)));
-					const contextTone = percent != null && percent > 90 ? "error" : percent != null && percent > 70 ? "warning" : "accent";
-					const gauge = theme.fg(contextTone, "▓".repeat(filledCells)) + theme.fg("dim", "░".repeat(GAUGE_CELLS - filledCells));
-					const contextCompact = theme.fg("muted", "ctx ") + theme.fg(contextTone, `${roundedPercent}%`);
-					const contextFull = theme.fg("muted", "ctx ") + gauge + " " + theme.fg(contextTone, `${roundedPercent}%`);
 					const statuses = [...footerData.getExtensionStatuses().entries()]
 						.filter(([key]) => key !== "codex-usage")
 						.sort(([a], [b]) => a.localeCompare(b))
 						.map(([, value]) => value.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim())
 						.filter(Boolean);
 					const activity = statuses.join(dot);
-					const contextText =
-						visibleWidth(activity) + visibleWidth(contextFull) + (activity ? 2 : 0) <= width
-							? contextFull
-							: contextCompact;
-					const detail = activity
-						? columns(activity, contextText, width, ellipsis)
-						: truncateToWidth(contextText, width, ellipsis);
-
-					return [truncateToWidth(header, width, ellipsis), detail];
+					const lines = [truncateToWidth(header, width, ellipsis)];
+					if (activity) lines.push(truncateToWidth(activity, width, ellipsis));
+					return lines;
 				},
 			};
 		});
