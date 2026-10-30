@@ -50,8 +50,7 @@ done
 managed_files=(
   settings.json
   keybindings.json
-  extensions/status-footer.ts
-  extensions/quiet-shell.ts
+  extensions/quiet-ui.ts
   extensions/ctrl-c.ts
   package.json
   tsconfig.json
@@ -67,6 +66,8 @@ managed_directories=(
 # not auto-discover stale extensions/skills. Kept intentionally exhaustive
 # after the large cleanup in this repo.
 legacy_managed_paths=(
+  extensions/status-footer.ts
+  extensions/quiet-shell.ts
   mcp.json
   extensions/agent-modes
   extensions/background-terminals
@@ -253,7 +254,7 @@ install_extension_deps() {
   fi
 }
 
-# No deps to install for the current trimmed set (btw/status-footer are
+# No deps to install for the current trimmed set (btw/quiet-ui are
 # single-file, no package.json). Keep the block for extensibility.
 for ext in ""; do
   [[ -z "$ext" ]] && continue

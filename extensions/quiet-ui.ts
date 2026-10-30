@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 function columns(left: string, right: string, width: number, ellipsis: string): string {
 	if (!right) return truncateToWidth(left, width, ellipsis);
@@ -24,9 +24,11 @@ async function repositoryName(pi: ExtensionAPI, cwd: string): Promise<string> {
 	return basename(cwd) || cwd;
 }
 
-export default function statusFooter(pi: ExtensionAPI) {
+export default function quietUI(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
+		ctx.ui.setToolsExpanded(false);
+		ctx.ui.setHiddenThinkingLabel("");
 
 		const project = await repositoryName(pi, ctx.sessionManager.getCwd());
 		ctx.ui.setFooter((tui, theme, footerData) => {
@@ -71,5 +73,23 @@ export default function statusFooter(pi: ExtensionAPI) {
 				},
 			};
 		});
+	});
+
+	pi.registerToolRenderer((toolName, next) => {
+		const renderers = next();
+		if (toolName !== "bash" && toolName !== "powershell") return renderers;
+		const renderResult = renderers?.renderResult;
+		if (!renderResult) return renderers;
+
+		return {
+			...renderers,
+			renderResult(result, options, theme, context) {
+				if (options.expanded) {
+					// The empty collapsed result is not the original renderer's reusable component.
+					return renderResult(result, options, theme, { ...context, lastComponent: undefined });
+				}
+				return new Container();
+			},
+		};
 	});
 }
